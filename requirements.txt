@@ -1,7 +1,7 @@
-pyrogram==2.0.106
-tgcrypto==1.2.5
-yt-dlp==2024.05.27
-aiohttp==3.9.5
+pyrogram
+tgcrypto
+yt-dlp
+aiohttp
 # For m3u8 plugin or advanced HTTP/streaming, aiohttp is handy
 
 # If you want to support python-telegram-bot plugins in the future, you could add:
