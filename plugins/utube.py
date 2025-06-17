@@ -166,7 +166,7 @@ async def process_and_send(client, message, links, mode):
     for link in links:
         try:
             progress_msg = await message.reply(f"🎯 Processing: {link}")
-            last_percent = -1  # To avoid unnecessary edits
+            last_text = {"val": None}  # For deduplication
 
             async def edit_progress(d):
                 if d['status'] == 'downloading':
@@ -175,16 +175,15 @@ async def process_and_send(client, message, links, mode):
                     speed = d.get('speed')
                     eta = d.get('eta')
                     if total and downloaded:
-                        percent = int(100 * downloaded / total)
-                        nonlocal last_percent
-                        if percent != last_percent:
-                            last_percent = percent
-                            bar = make_sexy_progress_bar(downloaded, total, speed, eta)
+                        bar = make_sexy_progress_bar(downloaded, total, speed, eta)
+                        text = bar + f"\n[`{link}`]"
+                        if last_text["val"] != text:
                             await progress_msg.edit_text(
-                                bar + f"\n[`{link}`]",
+                                text,
                                 parse_mode=ParseMode.MARKDOWN,
                                 disable_web_page_preview=True
                             )
+                            last_text["val"] = text
 
             def progress_hook(d):
                 asyncio.run_coroutine_threadsafe(edit_progress(d), client.loop)
