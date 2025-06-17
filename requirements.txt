@@ -1,0 +1,16 @@
+pyrogram==2.0.106
+tgcrypto==1.2.5
+yt-dlp==2024.05.27
+aiohttp==3.9.5
+# For m3u8 plugin or advanced HTTP/streaming, aiohttp is handy
+
+# If you want to support python-telegram-bot plugins in the future, you could add:
+# python-telegram-bot==20.8
+
+# For video/audio splitting and processing, ffmpeg is required at OS level (handled by Dockerfile), not Python
+
+# Optional: Add any other plugins that you may use
+# requests==2.31.0
+
+# For advanced logging/debugging
+# loguru==0.7.2
