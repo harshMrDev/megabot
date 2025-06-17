@@ -91,7 +91,7 @@ def make_sexy_progress_bar(downloaded, total, speed=None, eta=None, bar_length=1
 user_sessions = {}
 
 def add_handlers(app):
-    @app.on_message(filters.document & filters.private)
+    @app.on_message(filters.document & filters.private) 
 async def utube_txt_handler(client, message: Message):
     doc = message.document
     if doc.mime_type == "text/plain" or doc.file_name.endswith(".txt"):
