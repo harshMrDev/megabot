@@ -91,30 +91,11 @@ def make_sexy_progress_bar(downloaded, total, speed=None, eta=None, bar_length=1
 user_sessions = {}
 
 def add_handlers(app):
-    @app.on_message(filters.document & filters.private) 
-async def utube_txt_handler(client, message: Message):
-    doc = message.document
-    if doc.mime_type == "text/plain" or doc.file_name.endswith(".txt"):
-        file_path = await message.download()
-        with open(file_path, "r") as f:
-            links = []
-            for line in f:
-                links += extract_youtube_links(line.strip())
-        os.remove(file_path)
-        if not links:
-            await message.reply("No YouTube links found in your file.")
-            return
-        user_sessions[message.from_user.id] = {"pending_links": links}
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎵 Audio", callback_data="utube_audio"),
-             InlineKeyboardButton("📺 Video", callback_data="utube_video")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="utube_cancel")]
-        ])
-        await message.reply("Choose format:", reply_markup=keyboard)
     @app.on_message(filters.command("utube"))
     async def utube_entry(client, message: Message):
         text = message.text or ""
         links = extract_youtube_links(text)
+        # Also check if the replied-to message contains links
         if not links and message.reply_to_message and message.reply_to_message.text:
             links = extract_youtube_links(message.reply_to_message.text)
         if not links:
@@ -127,6 +108,27 @@ async def utube_txt_handler(client, message: Message):
             [InlineKeyboardButton("❌ Cancel", callback_data="utube_cancel")]
         ])
         await message.reply("Choose format:", reply_markup=keyboard)
+
+    @app.on_message(filters.document & filters.private)
+    async def utube_txt_handler(client, message: Message):
+        doc = message.document
+        if doc.mime_type == "text/plain" or doc.file_name.endswith(".txt"):
+            file_path = await message.download()
+            links = []
+            with open(file_path, "r") as f:
+                for line in f:
+                    links += extract_youtube_links(line.strip())
+            os.remove(file_path)
+            if not links:
+                await message.reply("No YouTube links found in your file.")
+                return
+            user_sessions[message.from_user.id] = {"pending_links": links}
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎵 Audio", callback_data="utube_audio"),
+                 InlineKeyboardButton("📺 Video", callback_data="utube_video")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="utube_cancel")]
+            ])
+            await message.reply("Choose format:", reply_markup=keyboard)
 
     @app.on_callback_query(filters.regex(r"^utube_"))
     async def inline_callback(client, callback_query):
