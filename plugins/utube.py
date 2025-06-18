@@ -2,20 +2,22 @@ import os
 import re
 import logging
 import asyncio
+from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 import yt_dlp
-# Add this at the top after imports
-@Client.on_message(filters.command("test"))
-async def test_handler(client, message: Message):
-    logger.info("Test command received")
-    try:
-        await message.reply("Bot is working! ✅")
-    except Exception as e:
-        logger.error(f"Error in test handler: {str(e)}")
+
 # Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# Constants
+ADMIN_USERNAME = "harshMrDev"
+START_TIME = "2025-06-18 08:24:41"
 
 YOUTUBE_REGEX = re.compile(
     r'(https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/)[\w\-\_\?&=]+)'
@@ -46,6 +48,19 @@ def make_sexy_progress_bar(downloaded, total, speed=None, eta=None, bar_length=1
         f"{extras}"
     )
 
+# Simple test command to verify bot responsiveness
+@Client.on_message(filters.command("ping"))
+async def ping_command(client, message: Message):
+    logger.info(f"Received ping command from user {message.from_user.id}")
+    try:
+        start_time = datetime.now()
+        msg = await message.reply_text("Pinging...")
+        end_time = datetime.now()
+        await msg.edit_text(f"Pong! 🏓\nResponse time: {(end_time - start_time).microseconds / 1000}ms")
+        logger.info("Successfully sent pong response")
+    except Exception as e:
+        logger.error(f"Error in ping command: {str(e)}")
+
 async def download_youtube(link, mode, cookies_file=None, progress_callback=None):
     logger.info(f"Starting download for {link} in mode {mode}")
     try:
@@ -63,7 +78,7 @@ async def download_youtube(link, mode, cookies_file=None, progress_callback=None
         outtmpl = "/tmp/%(title).60s.%(ext)s"
         ydl_opts = {
             "progress_hooks": [progress_callback] if progress_callback else [],
-            "format": "best",  # Default format
+            "format": "best",
             "outtmpl": outtmpl,
             "noplaylist": True,
             "nocheckcertificate": True,
@@ -107,6 +122,7 @@ async def download_youtube(link, mode, cookies_file=None, progress_callback=None
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                logger.info(f"Starting download with yt-dlp: {link}")
                 info = ydl.extract_info(link, download=True)
                 if mode == 'audio':
                     filename = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
@@ -128,31 +144,46 @@ user_sessions = {}
 
 @Client.on_message(filters.command("start"))
 async def start(client, message: Message):
+    logger.info(f"Received start command from user {message.from_user.id}")
     try:
         await message.reply(
             "🎉 *YouTube Downloader Bot*\n\n"
             "Send a YouTube link (or a .txt file with links).\n"
             "I'll ask for Audio/Video and, if video, ask for quality.\n"
-            "Files up to 4GB supported.",
+            "Files up to 4GB supported.\n\n"
+            f"Bot Started at: `{START_TIME}`\n"
+            f"Admin: @{ADMIN_USERNAME}",
             parse_mode=ParseMode.MARKDOWN
         )
+        logger.info("Successfully sent start message")
     except Exception as e:
         logger.error(f"Error in start command: {str(e)}")
 
 @Client.on_message(filters.command("help"))
 async def help_command(client, message: Message):
+    logger.info(f"Received help command from user {message.from_user.id}")
     try:
         await message.reply(
-            "Send a YouTube link (or a .txt file with links).\n"
-            "I'll ask if you want audio or video, then for video: the quality (360p/480p/1080p).\n"
-            "Files up to 4GB are supported.",
+            "📖 *Help Menu*\n\n"
+            "1. Send a YouTube link or a .txt file with links\n"
+            "2. Choose Audio or Video format\n"
+            "3. For video, select quality (360p/480p/1080p)\n"
+            "4. Wait for processing and download\n\n"
+            "Commands:\n"
+            "/start - Start the bot\n"
+            "/help - Show this help message\n"
+            "/ping - Check bot's response time\n\n"
+            "Note: Files up to 4GB are supported\n"
+            f"Admin: @{ADMIN_USERNAME}",
             parse_mode=ParseMode.MARKDOWN
         )
+        logger.info("Successfully sent help message")
     except Exception as e:
         logger.error(f"Error in help command: {str(e)}")
 
 @Client.on_message(filters.text | filters.document)
 async def handle_message(client, message: Message):
+    logger.info(f"Received message from user {message.from_user.id}")
     try:
         links = []
         if message.document and message.document.mime_type == "text/plain":
@@ -161,8 +192,10 @@ async def handle_message(client, message: Message):
                 for line in f:
                     links += extract_youtube_links(line.strip())
             os.remove(file)
+            logger.info(f"Processed text file with {len(links)} links")
         elif message.text:
             links = extract_youtube_links(message.text)
+            logger.info(f"Extracted {len(links)} links from text message")
 
         if not links:
             await message.reply("No YouTube links found.")
@@ -175,12 +208,14 @@ async def handle_message(client, message: Message):
             [InlineKeyboardButton("❌ Cancel", callback_data="choose_cancel")]
         ])
         await message.reply("Choose format:", reply_markup=keyboard)
+        logger.info(f"Sent format selection to user {message.from_user.id}")
     except Exception as e:
         logger.error(f"Error handling message: {str(e)}")
         await message.reply("Sorry, an error occurred while processing your request.")
 
 @Client.on_callback_query()
 async def inline_callback(client, callback_query):
+    logger.info(f"Received callback query from user {callback_query.from_user.id}: {callback_query.data}")
     try:
         user_id = callback_query.from_user.id
         session = user_sessions.get(user_id, {})
@@ -202,19 +237,21 @@ async def inline_callback(client, callback_query):
             session["awaiting_quality"] = True
         elif data in ['video_360', 'video_480', 'video_1080']:
             quality_label = data.replace("video_", "")
-            await callback_query.edit_message_text(f"Downloading {quality_label} ...")
+            await callback_query.edit_message_text(f"Downloading {quality_label}p video...")
             await process_and_send(client, callback_query.message, links, data)
             user_sessions.pop(user_id, None)
         elif data == 'choose_cancel':
-            await callback_query.edit_message_text("Cancelled.")
+            await callback_query.edit_message_text("Operation cancelled.")
             user_sessions.pop(user_id, None)
         else:
             await callback_query.edit_message_text("Unknown action.")
+        logger.info(f"Successfully processed callback {data} for user {user_id}")
     except Exception as e:
         logger.error(f"Error in callback: {str(e)}")
         await callback_query.edit_message_text("Sorry, an error occurred.")
 
 async def process_and_send(client, message, links, mode):
+    logger.info(f"Processing {len(links)} links in mode {mode}")
     cookies_file = 'cookies.txt' if os.path.exists('cookies.txt') else None
     for link in links:
         try:
@@ -230,7 +267,7 @@ async def process_and_send(client, message, links, mode):
                     if total and downloaded:
                         percent = int(100 * downloaded / total)
                         nonlocal last_percent
-                        if percent != last_percent:
+                        if percent != last_percent and percent % 5 == 0:  # Update every 5%
                             last_percent = percent
                             bar = make_sexy_progress_bar(downloaded, total, speed, eta)
                             try:
@@ -256,7 +293,7 @@ async def process_and_send(client, message, links, mode):
                 os.remove(file_path)
                 continue
 
-            if size > 4 * 1024 * 1024 * 1024:
+            if size > 4 * 1024 * 1024 * 1024:  # 4GB limit
                 await message.reply("❌ File too large! Max 4GB allowed.")
                 os.remove(file_path)
                 continue
@@ -265,6 +302,7 @@ async def process_and_send(client, message, links, mode):
             await message.reply_document(file_path)
             os.remove(file_path)
             await progress_msg.delete()
+            logger.info(f"Successfully processed and sent file for {link}")
         except Exception as e:
             logger.error(f"Error processing link {link}: {str(e)}")
             await message.reply(
