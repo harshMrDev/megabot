@@ -6,3 +6,4 @@ python-dotenv
 loguru
 m3u8
 ffmpeg-python
+aiofiles
