@@ -13,7 +13,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Constants
-START_TIME = "2025-06-18 18:33:11"
+START_TIME = "2025-06-18 18:40:16"
 ADMIN_USERNAME = "harshMrDev"
 MAX_CONCURRENT_DOWNLOADS = 10
 CHUNK_SIZE = 1024 * 1024
@@ -52,6 +52,20 @@ def time_formatter(seconds):
     hours, minutes = divmod(minutes, 60)
     return f"{hours:02d}h:{minutes:02d}m:{seconds:02d}s"
 
+async def handle_flood_wait(e, message):
+    """Handle FloodWait error"""
+    try:
+        wait_time = int(str(e).split('wait of ')[1].split(' seconds')[0])
+        await message.edit_text(
+            f"⏳ Telegram rate limit reached.\n"
+            f"Waiting for {wait_time} seconds..."
+        )
+        await asyncio.sleep(wait_time)
+        return True
+    except Exception as e:
+        logger.error(f"Error handling flood wait: {str(e)}")
+        return False
+
 async def progress(current, total, message, start, text):
     """Update progress bar for uploads"""
     try:
@@ -66,13 +80,17 @@ async def progress(current, total, message, start, text):
                     eta = 0
                 
                 progress_bar = create_progress_bar(current, total)
-                await message.edit_text(
-                    f"{text}\n"
-                    f"{progress_bar}\n"
-                    f"📊 Progress: {current * 100 / total:.1f}%\n"
-                    f"🚀 Speed: {humanbytes(speed)}/s\n"
-                    f"⏱ ETA: {time_formatter(eta)}"
-                )
+                try:
+                    await message.edit_text(
+                        f"{text}\n"
+                        f"{progress_bar}\n"
+                        f"📊 Progress: {current * 100 / total:.1f}%\n"
+                        f"🚀 Speed: {humanbytes(speed)}/s\n"
+                        f"⏱ ETA: {time_formatter(eta)}"
+                    )
+                except Exception as e:
+                    if "420 FLOOD_WAIT" in str(e):
+                        await handle_flood_wait(e, message)
     except Exception as e:
         logger.error(f"Progress update error: {str(e)}")
 
@@ -123,10 +141,14 @@ async def process_m3u8(url, output_file, status_msg):
             total_segments = len(playlist.segments)
             base_url = url.rsplit('/', 1)[0] + '/'
             
-            await status_msg.edit_text(
-                f"📥 Found {total_segments} segments\n"
-                "⏳ Starting download..."
-            )
+            try:
+                await status_msg.edit_text(
+                    f"📥 Found {total_segments} segments\n"
+                    "⏳ Starting download..."
+                )
+            except Exception as e:
+                if "420 FLOOD_WAIT" in str(e):
+                    await handle_flood_wait(e, status_msg)
 
             # Clean up existing file
             if os.path.exists(output_file):
@@ -149,13 +171,17 @@ async def process_m3u8(url, output_file, status_msg):
                     eta = (total_segments - idx) / speed if speed > 0 else 0
                     
                     progress_bar = create_progress_bar(idx, total_segments)
-                    await status_msg.edit_text(
-                        f"📥 Downloading segments\n"
-                        f"{progress_bar}\n"
-                        f"🔄 Progress: {idx}/{total_segments} ({idx/total_segments*100:.1f}%)\n"
-                        f"🚀 Speed: {idx/elapsed_time:.1f} segments/s\n"
-                        f"⏱ ETA: {time_formatter(eta)}"
-                    )
+                    try:
+                        await status_msg.edit_text(
+                            f"📥 Downloading segments\n"
+                            f"{progress_bar}\n"
+                            f"🔄 Progress: {idx}/{total_segments} ({idx/total_segments*100:.1f}%)\n"
+                            f"🚀 Speed: {idx/elapsed_time:.1f} segments/s\n"
+                            f"⏱ ETA: {time_formatter(eta)}"
+                        )
+                    except Exception as e:
+                        if "420 FLOOD_WAIT" in str(e):
+                            await handle_flood_wait(e, status_msg)
 
             # Verify download
             if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
@@ -166,7 +192,11 @@ async def process_m3u8(url, output_file, status_msg):
     except Exception as e:
         logger.error(f"M3U8 processing error: {str(e)}")
         if status_msg:
-            await status_msg.edit_text(f"❌ Error: {str(e)}")
+            try:
+                await status_msg.edit_text(f"❌ Error: {str(e)}")
+            except Exception as e2:
+                if "420 FLOOD_WAIT" in str(e2):
+                    await handle_flood_wait(e2, status_msg)
         return None
 
 async def download_pdf(session, url, output_path):
@@ -330,10 +360,17 @@ async def handle_m3u8(client, message):
                             url = entry['url']
                             clean_title = clean_filename(title)
                             
-                            await status_msg.edit_text(
-                                f"📥 Processing video {i+1}/{total}\n"
-                                f"Title: {clean_title}"
-                            )
+                            try:
+                                await status_msg.edit_text(
+                                    f"📥 Processing video {i+1}/{total}\n"
+                                    f"Title: {clean_title}"
+                                )
+                            except Exception as e:
+                                if "420 FLOOD_WAIT" in str(e):
+                                    if await handle_flood_wait(e, status_msg):
+                                        continue
+                                    else:
+                                        raise e
 
                             # Download video
                             ts_file = f"temp_{message.from_user.id}_{int(datetime.now().timestamp())}.ts"
@@ -341,72 +378,111 @@ async def handle_m3u8(client, message):
                             
                             if downloaded_file and os.path.exists(downloaded_file):
                                 # Convert video
-                                await status_msg.edit_text(f"🔄 Converting: {clean_title}")
+                                try:
+                                    await status_msg.edit_text(f"🔄 Converting: {clean_title}")
+                                except Exception as e:
+                                    if "420 FLOOD_WAIT" in str(e):
+                                        await handle_flood_wait(e, status_msg)
+                                        
                                 result_file = await convert_to_format(downloaded_file, output_format)
                                 
                                 if result_file and os.path.exists(result_file):
                                     # Upload video with progress
                                     start_time = time.time()
-                                    await message.reply_document(
-                                        result_file,
-                                        caption=f"🎥 {clean_title}",
-                                        file_name=f"{clean_title}.{output_format}",
-                                        progress=progress,
-                                        progress_args=(
-                                            status_msg,
-                                            start_time,
-                                            f"📤 Uploading: {clean_title}"
+                                    try:
+                                        await message.reply_document(
+                                            result_file,
+                                            caption=f"🎥 {clean_title}",
+                                            file_name=f"{clean_title}.{output_format}",
+                                            progress=progress,
+                                            progress_args=(
+                                                status_msg,
+                                                start_time,
+                                                f"📤 Uploading: {clean_title}"
+                                            )
                                         )
-                                    )
+                                    except Exception as e:
+                                        if "420 FLOOD_WAIT" in str(e):
+                                            if await handle_flood_wait(e, status_msg):
+                                                continue
+                                            else:
+                                                raise e
                                     os.remove(result_file)
                             
                             # Look ahead for associated PDFs
                             next_idx = i + 1
-                            while next_idx < len(entries) and entries[next_idx]['type'] == 'pdf' and entries[next_idx]['title'].strip() == title.strip():
+                            while next_idx < len(entries) and entries[next_idx]['type'] == 'pdf':
                                 pdf_entry = entries[next_idx]
-                                pdf_url = pdf_entry['url']
-                                
-                                await status_msg.edit_text(
-                                    f"📥 Downloading PDF for: {clean_title}"
-                                )
-                                
-                                pdf_path = f"temp_pdf_{message.from_user.id}_{int(datetime.now().timestamp())}.pdf"
-                                if await download_pdf(session, pdf_url, pdf_path):
-                                    # Upload PDF with progress
-                                    start_time = time.time()
-                                    await message.reply_document(
-                                        pdf_path,
-                                        caption=f"📚 {clean_title}",
-                                        file_name=f"{clean_title}.pdf",
-                                        progress=progress,
-                                        progress_args=(
-                                            status_msg,
-                                            start_time,
-                                            f"📤 Uploading PDF: {clean_title}"
+                                if pdf_entry['title'].strip() == title.strip():
+                                    pdf_url = pdf_entry['url']
+                                    
+                                    try:
+                                        await status_msg.edit_text(
+                                            f"📥 Downloading PDF for: {clean_title}"
                                         )
-                                    )
-                                    os.remove(pdf_path)
+                                    except Exception as e:
+                                        if "420 FLOOD_WAIT" in str(e):
+                                            if await handle_flood_wait(e, status_msg):
+                                                continue
+                                            else:
+                                                raise e
+                                    
+                                    pdf_path = f"temp_pdf_{message.from_user.id}_{int(datetime.now().timestamp())}.pdf"
+                                    if await download_pdf(session, pdf_url, pdf_path):
+                                        # Upload PDF with progress
+                                        start_time = time.time()
+                                        try:
+                                            await message.reply_document(
+                                                pdf_path,
+                                                caption=f"📚 {clean_title}",
+                                                file_name=f"{clean_title}.pdf",
+                                                progress=progress,
+                                                progress_args=(
+                                                    status_msg,
+                                                    start_time,
+                                                    f"📤 Uploading PDF: {clean_title}"
+                                                )
+                                            )
+                                        except Exception as e:
+                                            if "420 FLOOD_WAIT" in str(e):
+                                                if await handle_flood_wait(e, status_msg):
+                                                    continue
+                                                else:
+                                                    raise e
+                                        os.remove(pdf_path)
+                                    else:
+                                        await message.reply_text(f"❌ Failed to download PDF for: {clean_title}")
+                                    
+                                    next_idx += 1
+                                    i = next_idx - 1
                                 else:
-                                    await message.reply_text(f"❌ Failed to download PDF for: {clean_title}")
-                                
-                                next_idx += 1
-                                i = next_idx - 1
+                                    break
                             
                         i += 1
 
                     except Exception as e:
-                        logger.error(f"Error processing entry {i+1}: {str(e)}")
-                        await message.reply_text(f"❌ Error processing: {clean_title}\n`{str(e)}`")
-                        # Clean up files
-                        for f in [ts_file, result_file, pdf_path]:
-                            if 'f' in locals() and os.path.exists(f):
-                                os.remove(f)
-                        i += 1
+                        if "420 FLOOD_WAIT" in str(e):
+                            if await handle_flood_wait(e, status_msg):
+                                continue
+                            else:
+                                raise e
+                        else:
+                            logger.error(f"Error processing entry {i+1}: {str(e)}")
+                            await message.reply_text(f"❌ Error processing: {clean_title}\n`{str(e)}`")
+                            # Clean up files
+                            for f in [ts_file, result_file]:
+                                if 'f' in locals() and os.path.exists(f):
+                                    os.remove(f)
+                            i += 1
                     
-                    # Add a small delay between entries
-                    await asyncio.sleep(1)
+                    # Add longer delay between entries to avoid flood
+                    await asyncio.sleep(3)
 
-            await status_msg.edit_text("✅ All files processed in order!")
+            try:
+                await status_msg.edit_text("✅ All files processed in order!")
+            except Exception as e:
+                if "420 FLOOD_WAIT" in str(e):
+                    await handle_flood_wait(e, status_msg)
 
         else:  # Single URL
             status_msg = await message.reply_text("⏳ Processing...")
@@ -417,23 +493,43 @@ async def handle_m3u8(client, message):
             downloaded_file = await process_m3u8(message.text, ts_file, status_msg)
             
             if downloaded_file and os.path.exists(downloaded_file):
-                await status_msg.edit_text("🔄 Converting...")
+                try:
+                    await status_msg.edit_text("🔄 Converting...")
+                except Exception as e:
+                    if "420 FLOOD_WAIT" in str(e):
+                        await handle_flood_wait(e, status_msg)
+                        
                 result_file = await convert_to_format(downloaded_file, output_format)
                 
                 if result_file and os.path.exists(result_file):
                     # Upload with progress
                     start_time = time.time()
-                    await message.reply_document(
-                        result_file,
-                        caption="🎥 Video",
-                        file_name=f"video.{output_format}",
-                        progress=progress,
-                        progress_args=(
-                            status_msg,
-                            start_time,
-                            "📤 Uploading..."
+                    try:
+                        await message.reply_document(
+                            result_file,
+                            caption="🎥 Video",
+                            file_name=f"video.{output_format}",
+                            progress=progress,
+                            progress_args=(
+                                status_msg,
+                                start_time,
+                                "📤 Uploading..."
+                            )
                         )
-                    )
+                    except Exception as e:
+                        if "420 FLOOD_WAIT" in str(e):
+                            if await handle_flood_wait(e, status_msg):
+                                await message.reply_document(
+                                    result_file,
+                                    caption="🎥 Video",
+                                    file_name=f"video.{output_format}",
+                                    progress=progress,
+                                    progress_args=(
+                                        status_msg,
+                                        time.time(),
+                                        "📤 Uploading..."
+                                    )
+                                )
                     os.remove(result_file)
                 else:
                     await message.reply_text("❌ Conversion failed")
@@ -441,8 +537,11 @@ async def handle_m3u8(client, message):
                 await message.reply_text("❌ Download failed")
 
     except Exception as e:
-        await message.reply_text(f"❌ Error: `{str(e)}`")
-        logger.error(f"Handler error: {str(e)}")
+        if "420 FLOOD_WAIT" in str(e):
+            await handle_flood_wait(e, message)
+        else:
+            await message.reply_text(f"❌ Error: `{str(e)}`")
+            logger.error(f"Handler error: {str(e)}")
 
 @Client.on_message(filters.command(["m3u8", "mp3"]))
 async def handle_command(client, message):
