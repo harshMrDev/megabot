@@ -1,6 +1,7 @@
 import os
 import re
 import m3u8
+import time
 import aiohttp
 import aiofiles
 import asyncio
@@ -12,7 +13,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Constants
-START_TIME = "2025-06-18 18:19:31"
+START_TIME = "2025-06-18 18:33:11"
 ADMIN_USERNAME = "harshMrDev"
 MAX_CONCURRENT_DOWNLOADS = 10
 CHUNK_SIZE = 1024 * 1024
@@ -26,6 +27,54 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': '*/*',
 }
+
+def create_progress_bar(current, total, bar_length=20):
+    """Create a progress bar string"""
+    progress = float(current) / total
+    filled_length = int(bar_length * progress)
+    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+    percent = round(progress * 100, 1)
+    return f"[{bar}] {percent}%"
+
+def humanbytes(size):
+    """Convert bytes to human readable format"""
+    if not size:
+        return "0B"
+    for unit in ['', 'K', 'M', 'G', 'T', 'P', 'E', 'Z']:
+        if abs(size) < 1024.0:
+            return f"{size:3.1f}{unit}B"
+        size /= 1024.0
+    return f"{size:.1f}YB"
+
+def time_formatter(seconds):
+    """Format seconds into readable time"""
+    minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}h:{minutes:02d}m:{seconds:02d}s"
+
+async def progress(current, total, message, start, text):
+    """Update progress bar for uploads"""
+    try:
+        if round(current / total * 100, 0) % 5 == 0:
+            now = time.time()
+            diff = now - start
+            if diff > 1:
+                speed = current / diff
+                if speed > 0:
+                    eta = (total - current) / speed
+                else:
+                    eta = 0
+                
+                progress_bar = create_progress_bar(current, total)
+                await message.edit_text(
+                    f"{text}\n"
+                    f"{progress_bar}\n"
+                    f"📊 Progress: {current * 100 / total:.1f}%\n"
+                    f"🚀 Speed: {humanbytes(speed)}/s\n"
+                    f"⏱ ETA: {time_formatter(eta)}"
+                )
+    except Exception as e:
+        logger.error(f"Progress update error: {str(e)}")
 
 async def download_segment(session, url, output_file):
     """Download a single segment"""
@@ -83,7 +132,8 @@ async def process_m3u8(url, output_file, status_msg):
             if os.path.exists(output_file):
                 os.remove(output_file)
 
-            # Download segments
+            # Download segments with progress bar
+            start_time = time.time()
             for idx, segment in enumerate(playlist.segments, 1):
                 segment_url = urljoin(base_url, segment.uri)
                 success = await download_segment(session, segment_url, output_file)
@@ -93,10 +143,18 @@ async def process_m3u8(url, output_file, status_msg):
                     continue
 
                 if idx % 5 == 0 or idx == total_segments:
-                    progress = (idx / total_segments) * 100
+                    now = time.time()
+                    elapsed_time = now - start_time
+                    speed = idx / elapsed_time if elapsed_time > 0 else 0
+                    eta = (total_segments - idx) / speed if speed > 0 else 0
+                    
+                    progress_bar = create_progress_bar(idx, total_segments)
                     await status_msg.edit_text(
-                        f"📥 Downloading: {progress:.1f}%\n"
-                        f"Segments: {idx}/{total_segments}"
+                        f"📥 Downloading segments\n"
+                        f"{progress_bar}\n"
+                        f"🔄 Progress: {idx}/{total_segments} ({idx/total_segments*100:.1f}%)\n"
+                        f"🚀 Speed: {idx/elapsed_time:.1f} segments/s\n"
+                        f"⏱ ETA: {time_formatter(eta)}"
                     )
 
             # Verify download
@@ -154,17 +212,19 @@ async def parse_text_file(file_path):
                 # Handle PDF entries
                 elif line.startswith('PDF -'):
                     pdf_title = line[5:].strip()  # Remove 'PDF -' prefix
-                    # Split on last occurrence of ':http'
-                    parts = lines[i+1].rsplit(':http', 1) if i+1 < len(lines) else ['']
-                    if len(parts) == 2:
-                        pdf_url = 'http' + parts[1]
-                        if '.pdf' in pdf_url:
+                    if ':' in pdf_title:
+                        pdf_title = pdf_title.split(':', 1)[1].strip()
+                    
+                    # Get the next line which should be the PDF URL
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if next_line.startswith(('http://', 'https://')) and '.pdf' in next_line:
                             entries.append({
                                 'type': 'pdf',
                                 'title': pdf_title,
-                                'url': pdf_url
+                                'url': next_line
                             })
-                            logger.info(f"Found PDF: {pdf_title[:50]}... | {pdf_url[:50]}...")
+                            logger.info(f"Found PDF: {pdf_title[:50]}... | {next_line[:50]}...")
                             i += 1  # Skip the URL line
                 
                 i += 1
@@ -172,10 +232,6 @@ async def parse_text_file(file_path):
         total_videos = sum(1 for entry in entries if entry['type'] == 'video')
         total_pdfs = sum(1 for entry in entries if entry['type'] == 'pdf')
         logger.info(f"Parsed {len(entries)} total entries: {total_videos} videos, {total_pdfs} PDFs")
-        
-        # Log first few entries for debugging
-        for idx, entry in enumerate(entries[:3]):
-            logger.info(f"Entry {idx+1}: {entry['type']} - {entry['title'][:50]}... | {entry['url'][:50]}...")
         
         return entries
     except Exception as e:
@@ -250,15 +306,6 @@ async def handle_m3u8(client, message):
         if message.document and message.document.mime_type == "text/plain":
             status = await message.reply_text("📄 Reading file...")
             file = await message.download()
-            
-            # Log file content for debugging
-            try:
-                with open(file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    logger.info(f"File content preview: {content[:200]}...")
-            except Exception as e:
-                logger.error(f"Error reading file content: {str(e)}")
-            
             entries = await parse_text_file(file)
             os.remove(file)
             
@@ -273,16 +320,18 @@ async def handle_m3u8(client, message):
             )
 
             async with aiohttp.ClientSession() as session:
-                for idx, entry in enumerate(entries, 1):
+                i = 0
+                while i < len(entries):
                     try:
-                        entry_type = entry['type']
-                        title = entry['title']
-                        url = entry['url']
-                        clean_title = clean_filename(title)
-                        
-                        if entry_type == 'video':
+                        entry = entries[i]
+                        if entry['type'] == 'video':
+                            # Process video
+                            title = entry['title']
+                            url = entry['url']
+                            clean_title = clean_filename(title)
+                            
                             await status_msg.edit_text(
-                                f"📥 Processing video {idx}/{total}\n"
+                                f"📥 Processing video {i+1}/{total}\n"
                                 f"Title: {clean_title}"
                             )
 
@@ -296,38 +345,63 @@ async def handle_m3u8(client, message):
                                 result_file = await convert_to_format(downloaded_file, output_format)
                                 
                                 if result_file and os.path.exists(result_file):
-                                    await status_msg.edit_text(f"📤 Uploading: {clean_title}")
+                                    # Upload video with progress
+                                    start_time = time.time()
                                     await message.reply_document(
                                         result_file,
                                         caption=f"🎥 {clean_title}",
-                                        file_name=f"{clean_title}.{output_format}"
+                                        file_name=f"{clean_title}.{output_format}",
+                                        progress=progress,
+                                        progress_args=(
+                                            status_msg,
+                                            start_time,
+                                            f"📤 Uploading: {clean_title}"
+                                        )
                                     )
                                     os.remove(result_file)
-                                
-                        elif entry_type == 'pdf':
-                            await status_msg.edit_text(
-                                f"📥 Downloading PDF {idx}/{total}\n"
-                                f"Title: {clean_title}"
-                            )
                             
-                            pdf_path = f"temp_pdf_{message.from_user.id}_{int(datetime.now().timestamp())}.pdf"
-                            if await download_pdf(session, url, pdf_path):
-                                await message.reply_document(
-                                    pdf_path,
-                                    caption=f"📚 {clean_title}",
-                                    file_name=f"{clean_title}.pdf"
+                            # Look ahead for associated PDFs
+                            next_idx = i + 1
+                            while next_idx < len(entries) and entries[next_idx]['type'] == 'pdf' and entries[next_idx]['title'].strip() == title.strip():
+                                pdf_entry = entries[next_idx]
+                                pdf_url = pdf_entry['url']
+                                
+                                await status_msg.edit_text(
+                                    f"📥 Downloading PDF for: {clean_title}"
                                 )
-                                os.remove(pdf_path)
-                            else:
-                                await message.reply_text(f"❌ Failed to download PDF: {clean_title}")
+                                
+                                pdf_path = f"temp_pdf_{message.from_user.id}_{int(datetime.now().timestamp())}.pdf"
+                                if await download_pdf(session, pdf_url, pdf_path):
+                                    # Upload PDF with progress
+                                    start_time = time.time()
+                                    await message.reply_document(
+                                        pdf_path,
+                                        caption=f"📚 {clean_title}",
+                                        file_name=f"{clean_title}.pdf",
+                                        progress=progress,
+                                        progress_args=(
+                                            status_msg,
+                                            start_time,
+                                            f"📤 Uploading PDF: {clean_title}"
+                                        )
+                                    )
+                                    os.remove(pdf_path)
+                                else:
+                                    await message.reply_text(f"❌ Failed to download PDF for: {clean_title}")
+                                
+                                next_idx += 1
+                                i = next_idx - 1
+                            
+                        i += 1
 
                     except Exception as e:
-                        logger.error(f"Error processing entry {idx}: {str(e)}")
+                        logger.error(f"Error processing entry {i+1}: {str(e)}")
                         await message.reply_text(f"❌ Error processing: {clean_title}\n`{str(e)}`")
                         # Clean up files
-                        for f in [ts_file, result_file]:
+                        for f in [ts_file, result_file, pdf_path]:
                             if 'f' in locals() and os.path.exists(f):
                                 os.remove(f)
+                        i += 1
                     
                     # Add a small delay between entries
                     await asyncio.sleep(1)
@@ -347,11 +421,18 @@ async def handle_m3u8(client, message):
                 result_file = await convert_to_format(downloaded_file, output_format)
                 
                 if result_file and os.path.exists(result_file):
-                    await status_msg.edit_text("📤 Uploading...")
+                    # Upload with progress
+                    start_time = time.time()
                     await message.reply_document(
                         result_file,
                         caption="🎥 Video",
-                        file_name=f"video.{output_format}"
+                        file_name=f"video.{output_format}",
+                        progress=progress,
+                        progress_args=(
+                            status_msg,
+                            start_time,
+                            "📤 Uploading..."
+                        )
                     )
                     os.remove(result_file)
                 else:
