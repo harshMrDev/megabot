@@ -12,7 +12,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Constants
-START_TIME = "2025-06-18 17:50:34"
+START_TIME = "2025-06-18 18:04:39"
 ADMIN_USERNAME = "harshMrDev"
 MAX_CONCURRENT_DOWNLOADS = 10
 CHUNK_SIZE = 1024 * 1024
@@ -21,7 +21,7 @@ CHUNK_SIZE = 1024 * 1024
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Headers for CloudFront
+# Headers for requests
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': '*/*',
@@ -111,30 +111,82 @@ async def process_m3u8(url, output_file, status_msg):
             await status_msg.edit_text(f"❌ Error: {str(e)}")
         return None
 
+async def download_pdf(session, url, output_path):
+    """Download PDF file"""
+    try:
+        async with session.get(url, headers=HEADERS) as response:
+            if response.status == 200:
+                async with aiofiles.open(output_path, 'wb') as f:
+                    await f.write(await response.read())
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"PDF download error: {str(e)}")
+        return False
+
 async def parse_text_file(file_path):
-    """Parse text file to extract titles and URLs"""
-    titles_dict = {}
-    current_title = None
+    """Parse text file maintaining exact order of entries"""
+    entries = []
+    current_video = None
     
     try:
         async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
             async for line in file:
                 line = line.strip()
-                if not line:  # Skip empty lines
+                if not line:
                     continue
-                    
-                if line.startswith(('http://', 'https://')):
-                    if current_title:
-                        titles_dict[line] = current_title
-                        current_title = None
+                
+                if line.startswith('PDF -'):
+                    # PDF entry
+                    if ':' in line:
+                        title = line.split(':', 1)[1].strip()
+                        next_line = None
+                        async for next_line in file:
+                            next_line = next_line.strip()
+                            if next_line.startswith(('http://', 'https://')):
+                                entries.append({
+                                    'type': 'pdf',
+                                    'title': title,
+                                    'url': next_line
+                                })
+                                break
+                elif line.startswith(('http://', 'https://')):
+                    if 'm3u8' in line:
+                        current_video = line
                 else:
-                    current_title = line
-
-        logger.info(f"Parsed {len(titles_dict)} titles from file")
-        return titles_dict
+                    # This is a video title
+                    if current_video:
+                        entries.append({
+                            'type': 'video',
+                            'title': line,
+                            'url': current_video
+                        })
+                        current_video = None
+                    else:
+                        current_video = None
+                        
+        logger.info(f"Parsed {len(entries)} entries in order")
+        return entries
     except Exception as e:
         logger.error(f"Error parsing file: {str(e)}")
-        return {}
+        return []
+
+def clean_filename(title):
+    """Clean filename from invalid characters"""
+    if not title:
+        return datetime.now().strftime("Video_%Y%m%d_%H%M%S")
+        
+    # Remove or replace invalid characters
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        title = title.replace(char, '_')
+    
+    # Clean up whitespace and dots
+    title = ' '.join(title.split())
+    title = title.strip('. ')
+    
+    # Limit length
+    return title[:200]
 
 async def convert_to_format(input_file, output_format='mp4'):
     """Convert file to specified format using FFmpeg"""
@@ -174,114 +226,109 @@ async def convert_to_format(input_file, output_format='mp4'):
         logger.error(f"Conversion error: {str(e)}")
         return None
 
-def clean_filename(title):
-    """Clean filename from invalid characters"""
-    if not title:
-        return datetime.now().strftime("Video_%Y%m%d_%H%M%S")
-        
-    # Remove or replace invalid characters
-    invalid_chars = '<>:"/\\|?*'
-    for char in invalid_chars:
-        title = title.replace(char, '_')
-    
-    # Clean up whitespace and dots
-    title = ' '.join(title.split())
-    title = title.strip('. ')
-    
-    # Limit length
-    return title[:200]
-
 @Client.on_message((filters.regex(r'https?://[^\s<>"]+?\.m3u8(?:\?[^\s<>"]*)?') | filters.document) & filters.private)
 async def handle_m3u8(client, message):
     """Handle M3U8 URLs or text files"""
     try:
         output_format = 'mp3' if message.reply_to_message and message.reply_to_message.text and '/mp3' in message.reply_to_message.text else 'mp4'
         
-        links = []
-        titles = {}
-        
         if message.document and message.document.mime_type == "text/plain":
             status = await message.reply_text("📄 Reading file...")
             file = await message.download()
-            titles = await parse_text_file(file)
-            async with aiofiles.open(file, 'r', encoding='utf-8') as f:
-                content = await f.read()
-                links.extend(re.findall(r'https?://[^\s<>"]+?\.m3u8(?:\?[^\s<>"]*)?', content))
+            entries = await parse_text_file(file)
             os.remove(file)
             
-            logger.info(f"Found {len(titles)} titles for {len(links)} links")
-            
-        elif message.text:
-            links = [message.text.strip()]
-        
-        if not links:
-            await message.reply_text("❌ No valid M3U8 URLs found")
-            return
+            if not entries:
+                await message.reply_text("❌ No valid entries found in file")
+                return
 
-        emoji = "🎵" if output_format == 'mp3' else "🎥"
-        status_msg = await message.reply_text(
-            f"🔍 Found {len(links)} URL(s)\n"
-            "⏳ Processing..."
-        )
+            total = len(entries)
+            status_msg = await message.reply_text(
+                f"🔍 Found {total} entries\n"
+                "⏳ Processing in order..."
+            )
 
-        for idx, url in enumerate(links, 1):
-            try:
-                # Get title or generate from URL
-                title = titles.get(url) or url.split('/')[-1].split('.')[0]
-                clean_title = clean_filename(title)
-                
-                logger.info(f"Processing {idx}/{len(links)}: {clean_title}")
-                
-                base_output = f"media_{message.from_user.id}_{int(datetime.now().timestamp())}"
-                ts_file = f"{base_output}.ts"
-                
-                await status_msg.edit_text(
-                    f"📥 Processing: {clean_title}\n"
-                    f"Progress: {idx}/{len(links)}"
-                )
-
-                # Download and convert
-                downloaded_file = await process_m3u8(url, ts_file, status_msg)
-                
-                if downloaded_file and os.path.exists(downloaded_file):
-                    await status_msg.edit_text(f"🔄 Converting: {clean_title}")
-                    result_file = await convert_to_format(downloaded_file, output_format)
-                    
-                    if result_file and os.path.exists(result_file):
-                        file_size = os.path.getsize(result_file)
+            async with aiohttp.ClientSession() as session:
+                for idx, entry in enumerate(entries, 1):
+                    try:
+                        entry_type = entry['type']
+                        title = entry['title']
+                        url = entry['url']
+                        clean_title = clean_filename(title)
                         
-                        if file_size == 0:
-                            await message.reply_text(f"❌ {clean_title} is empty")
-                        elif file_size > 2000 * 1024 * 1024:
-                            await message.reply_text(f"❌ {clean_title} too large (>2GB)")
-                        else:
-                            await status_msg.edit_text(f"📤 Uploading: {clean_title}")
-                            
-                            caption = f"{emoji} {clean_title}"
-                            
-                            # Send with proper filename
-                            await message.reply_document(
-                                result_file,
-                                caption=caption,
-                                file_name=f"{clean_title}.{output_format}"
+                        if entry_type == 'video':
+                            await status_msg.edit_text(
+                                f"📥 Processing video {idx}/{total}\n"
+                                f"Title: {clean_title}"
                             )
-                        
-                        if os.path.exists(result_file):
-                            os.remove(result_file)
-                    else:
-                        await message.reply_text(f"❌ Conversion failed: {clean_title}")
+
+                            # Download video
+                            ts_file = f"temp_{message.from_user.id}_{int(datetime.now().timestamp())}.ts"
+                            downloaded_file = await process_m3u8(url, ts_file, status_msg)
+                            
+                            if downloaded_file and os.path.exists(downloaded_file):
+                                # Convert video
+                                await status_msg.edit_text(f"🔄 Converting: {clean_title}")
+                                result_file = await convert_to_format(downloaded_file, output_format)
+                                
+                                if result_file and os.path.exists(result_file):
+                                    await status_msg.edit_text(f"📤 Uploading: {clean_title}")
+                                    await message.reply_document(
+                                        result_file,
+                                        caption=f"🎥 {clean_title}",
+                                        file_name=f"{clean_title}.{output_format}"
+                                    )
+                                    os.remove(result_file)
+                                
+                        elif entry_type == 'pdf':
+                            await status_msg.edit_text(
+                                f"📥 Downloading PDF {idx}/{total}\n"
+                                f"Title: {clean_title}"
+                            )
+                            
+                            pdf_path = f"temp_pdf_{message.from_user.id}_{int(datetime.now().timestamp())}.pdf"
+                            if await download_pdf(session, url, pdf_path):
+                                await message.reply_document(
+                                    pdf_path,
+                                    caption=f"📚 {clean_title}",
+                                    file_name=f"{clean_title}.pdf"
+                                )
+                                os.remove(pdf_path)
+
+                    except Exception as e:
+                        logger.error(f"Error processing entry {idx}: {str(e)}")
+                        await message.reply_text(f"❌ Error processing: {clean_title}\n`{str(e)}`")
+                        # Clean up files
+                        for f in [ts_file, result_file, pdf_path]:
+                            if 'f' in locals() and os.path.exists(f):
+                                os.remove(f)
+
+            await status_msg.edit_text("✅ All files processed in order!")
+
+        else:  # Single URL
+            status_msg = await message.reply_text("⏳ Processing...")
+            
+            base_output = f"video_{message.from_user.id}_{int(datetime.now().timestamp())}"
+            ts_file = f"{base_output}.ts"
+            
+            downloaded_file = await process_m3u8(message.text, ts_file, status_msg)
+            
+            if downloaded_file and os.path.exists(downloaded_file):
+                await status_msg.edit_text("🔄 Converting...")
+                result_file = await convert_to_format(downloaded_file, output_format)
+                
+                if result_file and os.path.exists(result_file):
+                    await status_msg.edit_text("📤 Uploading...")
+                    await message.reply_document(
+                        result_file,
+                        caption="🎥 Video",
+                        file_name=f"video.{output_format}"
+                    )
+                    os.remove(result_file)
                 else:
-                    await message.reply_text(f"❌ Download failed: {clean_title}")
-
-            except Exception as e:
-                logger.error(f"Error processing {output_format} {idx}: {str(e)}")
-                await message.reply_text(f"❌ Error processing: {clean_title}\n`{str(e)}`")
-                # Clean up files
-                for f in [ts_file, result_file]:
-                    if 'f' in locals() and os.path.exists(f):
-                        os.remove(f)
-
-        await status_msg.edit_text(f"✅ All {output_format.upper()} files processed!")
+                    await message.reply_text("❌ Conversion failed")
+            else:
+                await message.reply_text("❌ Download failed")
 
     except Exception as e:
         await message.reply_text(f"❌ Error: `{str(e)}`")
