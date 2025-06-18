@@ -12,7 +12,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Constants
-START_TIME = "2025-06-18 18:13:01"
+START_TIME = "2025-06-18 18:19:31"
 ADMIN_USERNAME = "harshMrDev"
 MAX_CONCURRENT_DOWNLOADS = 10
 CHUNK_SIZE = 1024 * 1024
@@ -131,44 +131,40 @@ async def parse_text_file(file_path):
     try:
         async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
             content = await file.read()
-            lines = content.split('\n')
+            lines = [line.strip() for line in content.split('\n') if line.strip()]
             
             i = 0
             while i < len(lines):
-                line = lines[i].strip()
+                line = lines[i]
                 
-                # Skip empty lines
-                if not line:
-                    i += 1
-                    continue
-                
-                # If this is a video entry (contains m3u8)
+                # Handle video entries
                 if '.m3u8' in line:
-                    # Get the previous line as title
-                    title = lines[i-1].strip() if i > 0 else "Untitled Video"
-                    entries.append({
-                        'type': 'video',
-                        'title': title,
-                        'url': line
-                    })
-                    logger.info(f"Found video: {title[:50]}...")
+                    # Split on last occurrence of ':http'
+                    parts = line.rsplit(':http', 1)
+                    if len(parts) == 2:
+                        title = parts[0]
+                        url = 'http' + parts[1]
+                        entries.append({
+                            'type': 'video',
+                            'title': title,
+                            'url': url
+                        })
+                        logger.info(f"Found video: {title[:50]}... | {url[:50]}...")
                 
-                # If this is a PDF entry
+                # Handle PDF entries
                 elif line.startswith('PDF -'):
-                    title = line[5:].strip() # Remove 'PDF -' prefix
-                    if ':' in title:
-                        title = title.split(':', 1)[1].strip()
-                    
-                    # Get the next line which should be the PDF URL
-                    if i + 1 < len(lines):
-                        next_line = lines[i + 1].strip()
-                        if next_line.startswith(('http://', 'https://')) and '.pdf' in next_line:
+                    pdf_title = line[5:].strip()  # Remove 'PDF -' prefix
+                    # Split on last occurrence of ':http'
+                    parts = lines[i+1].rsplit(':http', 1) if i+1 < len(lines) else ['']
+                    if len(parts) == 2:
+                        pdf_url = 'http' + parts[1]
+                        if '.pdf' in pdf_url:
                             entries.append({
                                 'type': 'pdf',
-                                'title': title,
-                                'url': next_line
+                                'title': pdf_title,
+                                'url': pdf_url
                             })
-                            logger.info(f"Found PDF: {title[:50]}...")
+                            logger.info(f"Found PDF: {pdf_title[:50]}... | {pdf_url[:50]}...")
                             i += 1  # Skip the URL line
                 
                 i += 1
@@ -176,6 +172,10 @@ async def parse_text_file(file_path):
         total_videos = sum(1 for entry in entries if entry['type'] == 'video')
         total_pdfs = sum(1 for entry in entries if entry['type'] == 'pdf')
         logger.info(f"Parsed {len(entries)} total entries: {total_videos} videos, {total_pdfs} PDFs")
+        
+        # Log first few entries for debugging
+        for idx, entry in enumerate(entries[:3]):
+            logger.info(f"Entry {idx+1}: {entry['type']} - {entry['title'][:50]}... | {entry['url'][:50]}...")
         
         return entries
     except Exception as e:
@@ -318,14 +318,19 @@ async def handle_m3u8(client, message):
                                     file_name=f"{clean_title}.pdf"
                                 )
                                 os.remove(pdf_path)
+                            else:
+                                await message.reply_text(f"❌ Failed to download PDF: {clean_title}")
 
                     except Exception as e:
                         logger.error(f"Error processing entry {idx}: {str(e)}")
                         await message.reply_text(f"❌ Error processing: {clean_title}\n`{str(e)}`")
                         # Clean up files
-                        for f in [ts_file, result_file, pdf_path]:
+                        for f in [ts_file, result_file]:
                             if 'f' in locals() and os.path.exists(f):
                                 os.remove(f)
+                    
+                    # Add a small delay between entries
+                    await asyncio.sleep(1)
 
             await status_msg.edit_text("✅ All files processed in order!")
 
