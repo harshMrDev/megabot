@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import logging
 import asyncio
 from datetime import datetime
@@ -9,7 +10,7 @@ from pyrogram.errors import ApiIdInvalid, AccessTokenInvalid, AuthKeyUnregistere
 
 # Constants
 ADMIN_USERNAME = "harshMrDev"
-START_TIME = "2025-06-18 14:29:35"
+START_TIME = "2025-06-18 14:37:16"
 
 # Set up logging
 logging.basicConfig(
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 print(f"Bot starting... Time: {START_TIME}")
 logger.info(f"Bot initialization started by {ADMIN_USERNAME}")
 
-# Environment variable check with detailed logging
+# Environment variable check
 required_vars = ['API_ID', 'API_HASH', 'BOT_TOKEN']
 missing_vars = [var for var in required_vars if var not in os.environ]
 if missing_vars:
@@ -39,12 +40,11 @@ try:
     api_id = int(os.environ["API_ID"])
     api_hash = os.environ["API_HASH"]
     bot_token = os.environ["BOT_TOKEN"]
-    
 except ValueError as e:
     logger.error(f"API_ID must be an integer, got: {os.environ.get('API_ID')}")
     raise SystemExit("Invalid API_ID")
 
-# Initialize the client with explicit error handling
+# Initialize client
 app = Client(
     "youtube_downloader_bot",
     api_id=api_id,
@@ -52,137 +52,130 @@ app = Client(
     bot_token=bot_token,
     plugins=dict(root="plugins"),
     in_memory=True,
-    sleep_threshold=60  # Increase sleep threshold
+    sleep_threshold=180  # Increased sleep threshold
 )
 
-async def check_token_validity():
-    """Check if the bot token is valid by making a simple API call"""
-    try:
-        await asyncio.sleep(2)  # Add delay before check
-        me = await app.get_me()
-        logger.info(f"Bot token is valid for @{me.username}")
-        return True
-    except FloodWait as e:
-        logger.warning(f"FloodWait in token check: {e.value} seconds")
-        await asyncio.sleep(e.value)
-        return await check_token_validity()
-    except Exception as e:
-        logger.error(f"Error checking token: {str(e)}")
-        return False
+class BotManager:
+    def __init__(self):
+        self.last_flood_wait = 0
+        self.flood_wait_count = 0
+        self.max_flood_waits = 3
 
-async def set_commands():
-    """Set bot commands with error handling"""
-    try:
-        await asyncio.sleep(3)  # Add delay before setting commands
-        commands = [
-            BotCommand("start", "Start the bot"),
-            BotCommand("help", "Show help message"),
-            BotCommand("ping", "Check bot response"),
-            BotCommand("utube", "Download from YouTube"),
-            BotCommand("m3u8", "Download M3U8 streams")
-        ]
-        await app.set_bot_commands(commands)
-        logger.info("Bot commands set successfully")
-    except FloodWait as e:
-        logger.warning(f"FloodWait in set_commands: {e.value} seconds")
-        await asyncio.sleep(e.value)
-        return await set_commands()
-    except Exception as e:
-        logger.error(f"Failed to set commands: {e}")
+    async def safe_api_call(self, func, *args, **kwargs):
+        """Execute API calls with FloodWait handling"""
+        try:
+            await asyncio.sleep(2)  # Small delay before API call
+            return await func(*args, **kwargs)
+        except FloodWait as e:
+            self.flood_wait_count += 1
+            self.last_flood_wait = e.value
+            logger.warning(f"FloodWait: {e.value} seconds (attempt {self.flood_wait_count})")
+            
+            if self.flood_wait_count >= self.max_flood_waits:
+                logger.error("Too many FloodWait errors, restarting bot")
+                return None
+                
+            if e.value > 1000:  # If wait is too long
+                wait_time = 300  # Wait 5 minutes instead
+                logger.info(f"Long FloodWait detected, waiting {wait_time} seconds instead")
+            else:
+                wait_time = e.value
+                
+            await asyncio.sleep(wait_time)
+            return await self.safe_api_call(func, *args, **kwargs)
+        except Exception as e:
+            logger.error(f"API call error: {str(e)}")
+            return None
 
-async def initialize_bot():
-    """Initialize bot settings and configurations"""
-    try:
-        # Add initial delay
-        await asyncio.sleep(5)
-        
-        # Check token validity
-        if not await check_token_validity():
-            logger.error("Token validation failed")
+    async def initialize_bot(self):
+        """Initialize bot with FloodWait handling"""
+        try:
+            # Get bot info
+            me = await self.safe_api_call(app.get_me)
+            if not me:
+                return False
+                
+            # Set commands
+            commands = [
+                BotCommand("start", "Start the bot"),
+                BotCommand("help", "Show help message"),
+                BotCommand("ping", "Check bot response"),
+                BotCommand("utube", "Download from YouTube"),
+                BotCommand("m3u8", "Download M3U8 streams")
+            ]
+            
+            if not await self.safe_api_call(app.set_bot_commands, commands):
+                logger.warning("Failed to set commands, continuing anyway")
+            
+            logger.info(f"Bot initialized as @{me.username}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Initialization error: {str(e)}")
             return False
-        
-        # Add delay between operations
-        await asyncio.sleep(3)
-        
-        # Set commands
-        await set_commands()
-        
-        # Log successful initialization
-        logger.info("Bot initialization completed successfully")
-        return True
-        
-    except FloodWait as e:
-        logger.warning(f"FloodWait in initialize_bot: {e.value} seconds")
-        await asyncio.sleep(e.value)
-        return await initialize_bot()
-    except Exception as e:
-        logger.error(f"Error during initialization: {e}")
-        return False
 
-async def main():
-    """Main bot execution function"""
-    try:
-        logger.info(f"Starting bot at {START_TIME}")
+    async def run(self):
+        """Run the bot with proper error handling"""
+        try:
+            # Start the client
+            await app.start()
+            logger.info("Client started")
+            
+            # Initialize bot
+            if not await self.initialize_bot():
+                logger.error("Failed to initialize bot")
+                return
+            
+            # Keep the bot running
+            logger.info("Bot is ready")
+            await idle()
+            
+        except FloodWait as e:
+            logger.warning(f"Main FloodWait: {e.value} seconds")
+            if e.value > 1000:
+                logger.error("FloodWait too long, please wait and try again later")
+                return
+            await asyncio.sleep(e.value)
+            await self.run()
+            
+        except Exception as e:
+            logger.error(f"Runtime error: {str(e)}")
         
-        # Start with delay
-        await asyncio.sleep(2)
-        
-        # Start the client
-        await app.start()
-        logger.info("Client started successfully")
-        
-        # Initialize with delay
-        await asyncio.sleep(3)
-        if not await initialize_bot():
-            logger.error("Bot initialization failed")
-            return
-        
-        # Log successful startup
-        me = await app.get_me()
-        logger.info(f"Bot is running as @{me.username}")
-        
-        # Keep the bot running
-        await idle()
-        
-    except FloodWait as e:
-        logger.warning(f"FloodWait in main: {e.value} seconds")
-        if e.value > 1000:  # If wait is too long
-            logger.error(f"FloodWait too long ({e.value}s), restarting in 5 minutes")
-            await asyncio.sleep(300)  # Wait 5 minutes
-            return await main()
-        await asyncio.sleep(e.value)
-        return await main()
-    except Exception as e:
-        logger.error(f"Critical error: {str(e)}")
-        raise
-    finally:
-        if app.is_connected:
-            await app.stop()
+        finally:
+            if app.is_connected:
+                await app.stop()
+                logger.info("Bot stopped")
 
-def run_bot():
-    """Run the bot with retry mechanism"""
-    retries = 0
+def main():
+    """Main entry point with retry mechanism"""
+    bot_manager = BotManager()
+    retry_count = 0
     max_retries = 3
     
-    while retries < max_retries:
+    while retry_count < max_retries:
         try:
-            logger.info(f"Starting bot (attempt {retries + 1}/{max_retries})")
-            app.run(main())
+            logger.info(f"Starting bot (attempt {retry_count + 1}/{max_retries})")
+            app.run(bot_manager.run())
             break
-        except FloodWait as e:
-            retries += 1
-            wait_time = min(e.value, 300)  # Cap wait time at 5 minutes
-            logger.warning(f"FloodWait: waiting {wait_time}s before retry {retries}/{max_retries}")
-            time.sleep(wait_time)
+            
         except KeyboardInterrupt:
             logger.info("Bot stopped by user")
             break
+            
         except Exception as e:
+            retry_count += 1
             logger.error(f"Error: {str(e)}")
-            retries += 1
-            if retries < max_retries:
-                time.sleep(5)
+            
+            if retry_count < max_retries:
+                wait_time = 60 * retry_count  # Increasing wait between retries
+                logger.info(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
+            else:
+                logger.error("Max retries reached")
+                break
+                
         finally:
+            # Cleanup
             try:
                 if os.path.exists('bot.log'):
                     with open('bot.log', 'a') as f:
@@ -191,4 +184,4 @@ def run_bot():
                 logger.error(f"Cleanup error: {e}")
 
 if __name__ == "__main__":
-    run_bot()
+    main()
