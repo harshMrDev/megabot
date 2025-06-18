@@ -10,7 +10,7 @@ from pyrogram.errors import ApiIdInvalid, AccessTokenInvalid, AuthKeyUnregistere
 
 # Constants
 ADMIN_USERNAME = "harshMrDev"
-START_TIME = "2025-06-18 13:47:12"
+START_TIME = "2025-06-18 13:50:08"
 
 # Set up logging
 logging.basicConfig(
