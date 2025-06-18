@@ -11,106 +11,123 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Constants
-START_TIME = "2025-06-18 16:02:02"
+START_TIME = "2025-06-18 16:07:28"
 ADMIN_USERNAME = "harshMrDev"
-CHUNK_SIZE = 1024*1024  # 1MB chunks
-MAX_RETRIES = 3
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# M3U8 URL pattern
-M3U8_REGEX = r'https?://[^\s<>"]+?\.m3u8(?:\?[^\s<>"]*)?'
+async def validate_m3u8_url(session, url):
+    """Validate M3U8 URL and get playlist"""
+    try:
+        async with session.get(url, timeout=30) as response:
+            if response.status != 200:
+                return None, f"HTTP Error: {response.status}"
+            
+            content = await response.text()
+            if "#EXTM3U" not in content:
+                return None, "Not a valid M3U8 playlist"
+            
+            return content, None
+    except Exception as e:
+        return None, f"Connection error: {str(e)}"
 
-def get_base_url(url):
-    """Get base URL for relative paths"""
-    parsed = urlparse(url)
-    return f"{parsed.scheme}://{parsed.netloc}{os.path.dirname(parsed.path)}/"
-
-async def download_segment(session, url, base_url, output_file):
-    """Download a single segment"""
-    full_url = urljoin(base_url, url) if not url.startswith('http') else url
-    
-    for retry in range(MAX_RETRIES):
-        try:
-            async with session.get(full_url) as response:
-                if response.status == 200:
-                    async with aiofiles.open(output_file, 'ab') as f:
-                        await f.write(await response.read())
-                    return True
-        except Exception as e:
-            logger.error(f"Segment download error (attempt {retry+1}): {str(e)}")
-            if retry < MAX_RETRIES - 1:
-                await asyncio.sleep(1)
-    return False
+async def download_ts_file(session, url, output_path, progress_callback):
+    """Download TS file with progress updates"""
+    try:
+        async with session.get(url) as response:
+            if response.status != 200:
+                return False
+            
+            async with aiofiles.open(output_path, 'wb') as f:
+                async for chunk in response.content.iter_chunked(1024*1024):
+                    await f.write(chunk)
+                    await progress_callback()
+            return True
+    except:
+        return False
 
 async def process_m3u8(url, output_file, status_msg):
-    """Process M3U8 playlist and download segments"""
+    """Process M3U8 playlist"""
     try:
         async with aiohttp.ClientSession() as session:
-            # Get M3U8 playlist
-            async with session.get(url) as response:
-                if response.status != 200:
-                    raise Exception(f"Failed to get playlist: {response.status}")
+            # Validate and get playlist
+            content, error = await validate_m3u8_url(session, url)
+            if error:
+                await status_msg.edit_text(f"❌ Error: {error}")
+                return False
+
+            # Parse playlist
+            playlist = m3u8.loads(content)
+            
+            # If it's a master playlist, get the highest quality stream
+            if playlist.is_endlist and playlist.playlists:
+                # Sort by bandwidth and get highest quality
+                playlists = sorted(playlist.playlists, key=lambda p: p.stream_info.bandwidth if p.stream_info else 0)
+                playlist_url = playlists[-1].uri
+                base_url = url.rsplit('/', 1)[0]
+                if not playlist_url.startswith('http'):
+                    playlist_url = f"{base_url}/{playlist_url}"
                 
-                playlist_text = await response.text()
-                playlist = m3u8.loads(playlist_text)
+                # Get actual playlist
+                content, error = await validate_m3u8_url(session, playlist_url)
+                if error:
+                    await status_msg.edit_text(f"❌ Error: {error}")
+                    return False
                 
-                # Handle master playlist
-                if playlist.is_endlist and playlist.playlists:
-                    # Get highest quality stream
-                    playlist_url = playlist.playlists[-1].uri
-                    if not playlist_url.startswith('http'):
-                        playlist_url = urljoin(url, playlist_url)
-                    
-                    # Get actual playlist
-                    async with session.get(playlist_url) as sub_response:
-                        if sub_response.status != 200:
-                            raise Exception(f"Failed to get sub-playlist: {sub_response.status}")
-                        playlist = m3u8.loads(await sub_response.text())
-                        url = playlist_url  # Update base URL
+                playlist = m3u8.loads(content)
+                url = playlist_url
 
-                if not playlist.segments:
-                    raise Exception("No segments found in playlist")
+            # Check for segments
+            if not playlist.segments:
+                await status_msg.edit_text("❌ No segments found in playlist")
+                logger.error(f"No segments in playlist: {url}")
+                return False
 
-                base_url = get_base_url(url)
-                total_segments = len(playlist.segments)
-                
-                await status_msg.edit_text(
-                    f"📥 Found {total_segments} segments\n"
-                    "⏳ Starting download..."
-                )
+            # Get base URL for segments
+            base_url = url.rsplit('/', 1)[0]
+            total_segments = len(playlist.segments)
+            
+            await status_msg.edit_text(
+                f"📥 Found {total_segments} segments\n"
+                "⏳ Starting download..."
+            )
 
-                # Create fresh output file
-                if os.path.exists(output_file):
-                    os.remove(output_file)
-
-                # Download segments
+            # Download segments
+            downloaded = 0
+            async with aiofiles.open(output_file, 'wb') as outfile:
                 for idx, segment in enumerate(playlist.segments, 1):
-                    success = await download_segment(
-                        session, 
-                        segment.uri, 
-                        base_url, 
-                        output_file
-                    )
-                    
-                    if not success:
-                        raise Exception(f"Failed to download segment {idx}")
+                    segment_url = segment.uri
+                    if not segment_url.startswith('http'):
+                        segment_url = f"{base_url}/{segment_url}"
 
-                    # Update progress every 5 segments
-                    if idx % 5 == 0 or idx == total_segments:
-                        progress = idx * 100 / total_segments
-                        await status_msg.edit_text(
-                            f"📥 Downloading: {progress:.1f}%\n"
-                            f"Segments: {idx}/{total_segments}"
-                        )
+                    # Download segment
+                    async with session.get(segment_url) as response:
+                        if response.status == 200:
+                            data = await response.read()
+                            await outfile.write(data)
+                            downloaded += 1
 
-                return True
+                            # Update progress
+                            if idx % 5 == 0 or idx == total_segments:
+                                progress = (idx / total_segments) * 100
+                                await status_msg.edit_text(
+                                    f"📥 Downloading: {progress:.1f}%\n"
+                                    f"Segments: {idx}/{total_segments}"
+                                )
+                        else:
+                            logger.error(f"Failed to download segment {idx}: {response.status}")
+
+            if downloaded == 0:
+                await status_msg.edit_text("❌ Failed to download any segments")
+                return False
+
+            return True
 
     except Exception as e:
         logger.error(f"M3U8 processing error: {str(e)}")
-        await status_msg.edit_text(f"❌ Download failed: {str(e)}")
+        await status_msg.edit_text(f"❌ Error: {str(e)}")
         return False
 
 @Client.on_message(filters.command("m3u8"))
@@ -124,7 +141,7 @@ async def m3u8_command(client, message):
         "I will download and send the videos to you!"
     )
 
-@Client.on_message((filters.regex(M3U8_REGEX) | filters.document) & filters.private)
+@Client.on_message((filters.regex(r'https?://[^\s<>"]+?\.m3u8(?:\?[^\s<>"]*)?') | filters.document) & filters.private)
 async def handle_m3u8(client, message):
     """Handle M3U8 URLs or text files"""
     try:
@@ -136,24 +153,22 @@ async def handle_m3u8(client, message):
             file = await message.download()
             with open(file, 'r') as f:
                 content = f.read()
-                links.extend(re.findall(M3U8_REGEX, content))
+                links.extend(re.findall(r'https?://[^\s<>"]+?\.m3u8(?:\?[^\s<>"]*)?', content))
             os.remove(file)
             
         # Handle direct URL
         elif message.text:
-            links.extend(re.findall(M3U8_REGEX, message.text))
+            links = [message.text.strip()]
             
         if not links:
             await message.reply_text(
-                "❌ No valid M3U8 URLs found.\n\n"
-                "Please send:\n"
-                "• Direct M3U8 URL or\n"
-                "• Text file with M3U8 URLs"
+                "❌ No valid M3U8 URLs found.\n"
+                "Please send a valid M3U8 URL or text file containing URLs."
             )
             return
 
         status_msg = await message.reply_text(
-            f"🔍 Found {len(links)} M3U8 URL(s)\n"
+            f"🔍 Found {len(links)} URL(s)\n"
             "⏳ Processing..."
         )
 
@@ -195,7 +210,7 @@ async def handle_m3u8(client, message):
             except Exception as e:
                 logger.error(f"Error processing stream {idx}: {str(e)}")
                 await message.reply_text(f"❌ Error processing stream {idx}:\n`{str(e)}`")
-                if os.path.exists(output_file):
+                if 'output_file' in locals() and os.path.exists(output_file):
                     os.remove(output_file)
 
         await status_msg.edit_text("✅ All streams processed!")
