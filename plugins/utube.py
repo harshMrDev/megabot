@@ -1,10 +1,14 @@
 import os
 import re
+import logging
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 import yt_dlp
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 YOUTUBE_REGEX = re.compile(
     r'(https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/)[\w\-\_\?&=]+)'
@@ -36,15 +40,37 @@ def make_sexy_progress_bar(downloaded, total, speed=None, eta=None, bar_length=1
     )
 
 async def download_youtube(link, mode, cookies_file=None, progress_callback=None):
+    logger.info(f"Starting download for {link} in mode {mode}")
+    try:
+        # Test tmp directory
+        test_file = "/tmp/test_write.txt"
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+        logger.info("Successfully tested /tmp directory write access")
+    except Exception as e:
+        logger.error(f"Failed to write to /tmp directory: {e}")
+        raise
+
     def get_stream():
         outtmpl = "/tmp/%(title).60s.%(ext)s"
         ydl_opts = {
             "progress_hooks": [progress_callback] if progress_callback else [],
+            "format": "best",  # Default format
+            "outtmpl": outtmpl,
+            "noplaylist": True,
+            "nocheckcertificate": True,
+            "ignoreerrors": False,
+            "logtostderr": False,
+            "quiet": True,
+            "no_warnings": True,
+            "default_search": "auto",
+            "source_address": "0.0.0.0"
         }
+        
         if mode == 'audio':
             ydl_opts.update({
                 'format': 'bestaudio/best',
-                'outtmpl': outtmpl,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
@@ -54,113 +80,132 @@ async def download_youtube(link, mode, cookies_file=None, progress_callback=None
         elif mode == 'video_360':
             ydl_opts.update({
                 'format': 'bestvideo[height<=360]+bestaudio/best[height<=360]/best[height<=360]',
-                'outtmpl': outtmpl,
                 'merge_output_format': 'mp4',
             })
         elif mode == 'video_480':
             ydl_opts.update({
                 'format': 'bestvideo[height<=480]+bestaudio/best[height<=480]/best[height<=480]',
-                'outtmpl': outtmpl,
                 'merge_output_format': 'mp4',
             })
         elif mode == 'video_1080':
             ydl_opts.update({
                 'format': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best[height<=1080]',
-                'outtmpl': outtmpl,
                 'merge_output_format': 'mp4',
             })
         else:
             raise Exception("Invalid mode")
+
         if cookies_file and os.path.exists(cookies_file):
             ydl_opts['cookiefile'] = cookies_file
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(link, download=True)
-            if mode == 'audio':
-                filename = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
-            else:
-                ext = 'mp4'
-                filename = ydl.prepare_filename(info).rsplit('.', 1)[0] + f'.{ext}'
-            safe_filename = '/tmp/' + sanitize_filename(os.path.basename(filename))
-            if filename != safe_filename and os.path.exists(filename):
-                os.rename(filename, safe_filename)
-            return safe_filename if os.path.exists(safe_filename) else filename
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(link, download=True)
+                if mode == 'audio':
+                    filename = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
+                else:
+                    ext = 'mp4'
+                    filename = ydl.prepare_filename(info).rsplit('.', 1)[0] + f'.{ext}'
+                safe_filename = '/tmp/' + sanitize_filename(os.path.basename(filename))
+                if filename != safe_filename and os.path.exists(filename):
+                    os.rename(filename, safe_filename)
+                return safe_filename if os.path.exists(safe_filename) else filename
+        except Exception as e:
+            logger.error(f"Error downloading video: {str(e)}")
+            raise
+
     return await asyncio.to_thread(get_stream)
 
+# Store user sessions
 user_sessions = {}
 
 @Client.on_message(filters.command("start"))
 async def start(client, message: Message):
-    await message.reply(
-        "🎉 *YouTube Downloader Bot*\n\n"
-        "Send a YouTube link (or a .txt file with links).\n"
-        "I'll ask for Audio/Video and, if video, ask for quality.\n"
-        "Files up to 4GB supported.",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        await message.reply(
+            "🎉 *YouTube Downloader Bot*\n\n"
+            "Send a YouTube link (or a .txt file with links).\n"
+            "I'll ask for Audio/Video and, if video, ask for quality.\n"
+            "Files up to 4GB supported.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in start command: {str(e)}")
 
 @Client.on_message(filters.command("help"))
 async def help_command(client, message: Message):
-    await message.reply(
-        "Send a YouTube link (or a .txt file with links).\n"
-        "I'll ask if you want audio or video, then for video: the quality (360p/480p/1080p).\n"
-        "Files up to 4GB are supported.",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        await message.reply(
+            "Send a YouTube link (or a .txt file with links).\n"
+            "I'll ask if you want audio or video, then for video: the quality (360p/480p/1080p).\n"
+            "Files up to 4GB are supported.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in help command: {str(e)}")
 
 @Client.on_message(filters.text | filters.document)
 async def handle_message(client, message: Message):
-    links = []
-    if message.document and message.document.mime_type == "text/plain":
-        file = await client.download_media(message.document)
-        with open(file, "r") as f:
-            for line in f:
-                links += extract_youtube_links(line.strip())
-        os.remove(file)
-    elif message.text:
-        links = extract_youtube_links(message.text)
+    try:
+        links = []
+        if message.document and message.document.mime_type == "text/plain":
+            file = await client.download_media(message.document)
+            with open(file, "r") as f:
+                for line in f:
+                    links += extract_youtube_links(line.strip())
+            os.remove(file)
+        elif message.text:
+            links = extract_youtube_links(message.text)
 
-    if not links:
-        await message.reply("No YouTube links found.")
-        return
+        if not links:
+            await message.reply("No YouTube links found.")
+            return
 
-    user_sessions[message.from_user.id] = {"pending_links": links}
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎵 Audio", callback_data="choose_audio"),
-         InlineKeyboardButton("📺 Video", callback_data="choose_video")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="choose_cancel")]
-    ])
-    await message.reply("Choose format:", reply_markup=keyboard)
+        user_sessions[message.from_user.id] = {"pending_links": links}
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎵 Audio", callback_data="choose_audio"),
+             InlineKeyboardButton("📺 Video", callback_data="choose_video")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="choose_cancel")]
+        ])
+        await message.reply("Choose format:", reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Error handling message: {str(e)}")
+        await message.reply("Sorry, an error occurred while processing your request.")
 
 @Client.on_callback_query()
 async def inline_callback(client, callback_query):
-    user_id = callback_query.from_user.id
-    session = user_sessions.get(user_id, {})
-    links = session.get("pending_links", [])
-    data = callback_query.data
+    try:
+        user_id = callback_query.from_user.id
+        session = user_sessions.get(user_id, {})
+        links = session.get("pending_links", [])
+        data = callback_query.data
 
-    if data == 'choose_audio':
-        await callback_query.edit_message_text("Downloading audio...")
-        await process_and_send(client, callback_query.message, links, 'audio')
-        user_sessions.pop(user_id, None)
-    elif data == 'choose_video':
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📺 360p", callback_data='video_360'),
-             InlineKeyboardButton("📺 480p", callback_data='video_480'),
-             InlineKeyboardButton("📺 1080p", callback_data='video_1080')],
-            [InlineKeyboardButton("❌ Cancel", callback_data='choose_cancel')]
-        ])
-        await callback_query.edit_message_text("Choose video quality:", reply_markup=keyboard)
-        session["awaiting_quality"] = True
-    elif data in ['video_360', 'video_480', 'video_1080']:
-        quality_label = data.replace("video_", "")
-        await callback_query.edit_message_text(f"Downloading {quality_label} ...")
-        await process_and_send(client, callback_query.message, links, data)
-        user_sessions.pop(user_id, None)
-    elif data == 'choose_cancel':
-        await callback_query.edit_message_text("Cancelled.")
-        user_sessions.pop(user_id, None)
-    else:
-        await callback_query.edit_message_text("Unknown action.")
+        if data == 'choose_audio':
+            await callback_query.edit_message_text("Downloading audio...")
+            await process_and_send(client, callback_query.message, links, 'audio')
+            user_sessions.pop(user_id, None)
+        elif data == 'choose_video':
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📺 360p", callback_data='video_360'),
+                 InlineKeyboardButton("📺 480p", callback_data='video_480'),
+                 InlineKeyboardButton("📺 1080p", callback_data='video_1080')],
+                [InlineKeyboardButton("❌ Cancel", callback_data='choose_cancel')]
+            ])
+            await callback_query.edit_message_text("Choose video quality:", reply_markup=keyboard)
+            session["awaiting_quality"] = True
+        elif data in ['video_360', 'video_480', 'video_1080']:
+            quality_label = data.replace("video_", "")
+            await callback_query.edit_message_text(f"Downloading {quality_label} ...")
+            await process_and_send(client, callback_query.message, links, data)
+            user_sessions.pop(user_id, None)
+        elif data == 'choose_cancel':
+            await callback_query.edit_message_text("Cancelled.")
+            user_sessions.pop(user_id, None)
+        else:
+            await callback_query.edit_message_text("Unknown action.")
+    except Exception as e:
+        logger.error(f"Error in callback: {str(e)}")
+        await callback_query.edit_message_text("Sorry, an error occurred.")
 
 async def process_and_send(client, message, links, mode):
     cookies_file = 'cookies.txt' if os.path.exists('cookies.txt') else None
@@ -181,11 +226,14 @@ async def process_and_send(client, message, links, mode):
                         if percent != last_percent:
                             last_percent = percent
                             bar = make_sexy_progress_bar(downloaded, total, speed, eta)
-                            await progress_msg.edit_text(
-                                bar + f"\n[`{link}`]",
-                                parse_mode=ParseMode.MARKDOWN,
-                                disable_web_page_preview=True
-                            )
+                            try:
+                                await progress_msg.edit_text(
+                                    bar + f"\n[`{link}`]",
+                                    parse_mode=ParseMode.MARKDOWN,
+                                    disable_web_page_preview=True
+                                )
+                            except Exception as e:
+                                logger.error(f"Error updating progress: {str(e)}")
 
             def progress_hook(d):
                 asyncio.run_coroutine_threadsafe(edit_progress(d), client.loop)
@@ -194,20 +242,25 @@ async def process_and_send(client, message, links, mode):
             if not os.path.exists(file_path):
                 await message.reply("❌ Download failed, file not found!")
                 continue
+
             size = os.path.getsize(file_path)
             if size == 0:
                 await message.reply("❌ File is empty. Download failed!")
                 os.remove(file_path)
                 continue
+
             if size > 4 * 1024 * 1024 * 1024:
                 await message.reply("❌ File too large! Max 4GB allowed.")
                 os.remove(file_path)
                 continue
+
             await progress_msg.edit_text("✅ Uploading to Telegram...", parse_mode=ParseMode.MARKDOWN)
             await message.reply_document(file_path)
             os.remove(file_path)
             await progress_msg.delete()
         except Exception as e:
+            logger.error(f"Error processing link {link}: {str(e)}")
             await message.reply(
-                f"❌ Failed for {link}:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN
+                f"❌ Failed for {link}:\n`{str(e)}`",
+                parse_mode=ParseMode.MARKDOWN
             )
