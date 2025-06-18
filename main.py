@@ -2,9 +2,14 @@ import os
 import sys
 import logging
 import asyncio
+from datetime import datetime
 from pyrogram import Client, idle
 from pyrogram.types import BotCommand
 from pyrogram.errors import ApiIdInvalid, AccessTokenInvalid, AuthKeyUnregistered
+
+# Constants
+ADMIN_USERNAME = "harshMrDev"
+START_TIME = "2025-06-18 12:40:28"
 
 # Set up logging
 logging.basicConfig(
@@ -18,8 +23,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Print startup message
-print("Bot starting...")
-logger.info("Bot initialization started")
+print(f"Bot starting... Time: {START_TIME}")
+logger.info(f"Bot initialization started by {ADMIN_USERNAME}")
 
 # Environment variable check with detailed logging
 required_vars = ['API_ID', 'API_HASH', 'BOT_TOKEN']
@@ -39,6 +44,7 @@ try:
     logger.info(f"API_ID: {'*' * len(str(api_id))}")
     logger.info(f"API_HASH: {api_hash[:4]}...{api_hash[-4:]}")
     logger.info(f"BOT_TOKEN: {bot_token[:4]}...{bot_token[-4:]}")
+    logger.info(f"Admin Username: @{ADMIN_USERNAME}")
     
 except ValueError as e:
     logger.error(f"API_ID must be an integer, got: {os.environ.get('API_ID')}")
@@ -54,26 +60,11 @@ app = Client(
     in_memory=True  # Don't save session files
 )
 
-async def set_commands():
-    """Set bot commands with error handling"""
-    try:
-        commands = [
-            BotCommand("start", "Start the bot"),
-            BotCommand("help", "Show help message"),
-            BotCommand("ping", "Check bot response"),
-            BotCommand("utube", "Download from YouTube")
-        ]
-        await app.set_bot_commands(commands)
-        logger.info("Bot commands set successfully")
-    except Exception as e:
-        logger.error(f"Failed to set bot commands: {e}")
-        raise
-
 async def check_token_validity():
     """Check if the bot token is valid by making a simple API call"""
     try:
-        await app.get_me()
-        logger.info("Bot token is valid")
+        me = await app.get_me()
+        logger.info(f"Bot token is valid for @{me.username}")
         return True
     except ApiIdInvalid:
         logger.error("API ID/Hash are invalid")
@@ -88,44 +79,91 @@ async def check_token_validity():
         logger.error(f"Unexpected error checking bot token: {str(e)}")
         return False
 
-async def main():
+async def set_commands():
+    """Set bot commands with error handling"""
     try:
-        logger.info("Starting bot...")
-        
-        # Start the client
-        await app.start()
-        logger.info("Client started successfully")
-        
+        commands = [
+            BotCommand("start", "Start the bot"),
+            BotCommand("help", "Show help message"),
+            BotCommand("ping", "Check bot response"),
+            BotCommand("utube", "Download from YouTube")
+        ]
+        await app.set_bot_commands(commands)
+        logger.info("Bot commands set successfully")
+    except Exception as e:
+        logger.error(f"Failed to set bot commands: {e}")
+
+async def initialize_bot():
+    """Initialize bot settings and configurations"""
+    try:
         # Check token validity
         if not await check_token_validity():
             logger.error("Token validation failed")
-            return
+            return False
         
         # Set commands
         await set_commands()
         
-        # Log successful startup
-        logger.info("Bot is fully initialized and running")
-        me = await app.get_me()
-        logger.info(f"Bot Username: @{me.username}")
+        # Log successful initialization
+        logger.info("Bot initialization completed successfully")
+        return True
         
-        # Keep the bot running
-        logger.info("Bot is now listening for updates")
-        await idle()
+    except Exception as e:
+        logger.error(f"Error during bot initialization: {e}")
+        return False
+
+async def main():
+    """Main bot execution function"""
+    try:
+        logger.info(f"Starting bot at {START_TIME}")
         
+        # Start the client using context manager
+        async with app:
+            # Initialize bot
+            if not await initialize_bot():
+                logger.error("Bot initialization failed")
+                return
+            
+            # Log successful startup
+            me = await app.get_me()
+            logger.info(f"Bot is running as @{me.username}")
+            logger.info("Bot is now listening for updates")
+            
+            # Keep the bot running
+            await idle()
+            
     except Exception as e:
         logger.error(f"Critical error in main: {str(e)}")
         raise
     finally:
         logger.info("Stopping bot...")
-        await app.stop()
+        if app.is_connected:
+            await app.stop()
+            logger.info("Bot stopped successfully")
 
-if __name__ == "__main__":
+def cleanup():
+    """Cleanup function to handle bot shutdown"""
     try:
-        logger.info("Starting bot process")
-        asyncio.run(main())
+        # Remove any temporary files or cleanup tasks here
+        if os.path.exists('bot.log'):
+            with open('bot.log', 'a') as f:
+                f.write(f"\nBot stopped at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
+
+def run_bot():
+    """Run the bot with proper event loop and error handling"""
+    try:
+        logger.info(f"Starting bot process as {ADMIN_USERNAME}")
+        app.run(main())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
         raise
+    finally:
+        cleanup()
+        logger.info("Bot process finished")
+
+if __name__ == "__main__":
+    run_bot()
