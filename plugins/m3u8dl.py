@@ -13,7 +13,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Constants
-START_TIME = "2025-06-18 18:40:16"
+START_TIME = "2025-06-18 18:47:57"
 ADMIN_USERNAME = "harshMrDev"
 MAX_CONCURRENT_DOWNLOADS = 10
 CHUNK_SIZE = 1024 * 1024
@@ -225,13 +225,15 @@ async def parse_text_file(file_path):
             while i < len(lines):
                 line = lines[i]
                 
-                # Handle video entries
+                # Handle video entries with [Category] Title format
                 if '.m3u8' in line:
                     # Split on last occurrence of ':http'
                     parts = line.rsplit(':http', 1)
                     if len(parts) == 2:
-                        title = parts[0]
-                        url = 'http' + parts[1]
+                        title = parts[0].strip()
+                        url = 'http' + parts[1].strip()
+                        
+                        # Keep the original format with square brackets
                         entries.append({
                             'type': 'video',
                             'title': title,
@@ -263,6 +265,10 @@ async def parse_text_file(file_path):
         total_pdfs = sum(1 for entry in entries if entry['type'] == 'pdf')
         logger.info(f"Parsed {len(entries)} total entries: {total_videos} videos, {total_pdfs} PDFs")
         
+        # Log first few entries for debugging
+        for idx, entry in enumerate(entries[:3]):
+            logger.info(f"Entry {idx+1}: {entry['type']} - {entry['title'][:50]}... | {entry['url'][:50]}...")
+        
         return entries
     except Exception as e:
         logger.error(f"Error parsing file: {str(e)}")
@@ -274,10 +280,8 @@ def clean_filename(title):
     if not title:
         return datetime.now().strftime("Video_%Y%m%d_%H%M%S")
     
-    # Remove [ and ] from title
-    title = title.replace('[', '').replace(']', '')
-    
-    # Remove or replace invalid characters
+    # Keep the square brackets for category
+    # Remove only invalid characters
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
         title = title.replace(char, '_')
@@ -286,8 +290,22 @@ def clean_filename(title):
     title = ' '.join(title.split())
     title = title.strip('. ')
     
-    # Limit length
-    return title[:200]
+    # Limit length while preserving the category in brackets
+    if len(title) > 200:
+        bracket_end = title.find(']')
+        if bracket_end != -1:
+            category = title[:bracket_end+1]
+            rest = title[bracket_end+1:].strip()
+            # Ensure we don't exceed 200 chars while keeping the category
+            available_space = 197 - len(category)  # 197 to account for " - "
+            if available_space > 0:
+                title = f"{category} - {rest[:available_space]}"
+            else:
+                title = title[:200]
+        else:
+            title = title[:200]
+    
+    return title
 
 async def convert_to_format(input_file, output_format='mp4'):
     """Convert file to specified format using FFmpeg"""
