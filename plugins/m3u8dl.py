@@ -18,12 +18,16 @@ logger = logging.getLogger(__name__)
 
 # Constants
 ADMIN_USERNAME = "harshMrDev"
-START_TIME = "2025-06-18 13:01:35"
+START_TIME = "2025-06-18 13:32:14"
 
 # Regular expression for M3U8 URLs
 M3U8_REGEX = re.compile(
     r'https?://[^\s<>"]+?\.m3u8(?:\?[^\s<>"]*)?'
 )
+
+def extract_m3u8_links(text):
+    """Extract M3U8 links from text"""
+    return M3U8_REGEX.findall(text or "")
 
 def make_progress_bar(current, total, bar_length=18):
     if total == 0:
@@ -105,95 +109,103 @@ async def m3u8_command(client, message: Message):
     try:
         await message.reply_text(
             "📺 **M3U8 Stream Downloader**\n\n"
-            "Send me an M3U8 URL to download the stream.\n\n"
+            "You can:\n"
+            "1. Send an M3U8 URL directly\n"
+            "2. Send a .txt file containing multiple M3U8 URLs (one per line)\n\n"
             "Example URLs:\n"
             "▫️ https://example.com/stream.m3u8\n"
             "▫️ https://live.stream.com/index.m3u8\n\n"
-            "Note: Maximum file size is 4GB",
+            "Note: Maximum file size is 4GB per stream\n\n"
+            f"Started at: {START_TIME}\n"
+            f"Admin: @{ADMIN_USERNAME}",
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
         logger.error(f"Error in m3u8 command: {e}")
         await message.reply_text("An error occurred. Please try again.")
 
-@Client.on_message(filters.regex(M3U8_REGEX) & filters.private)
-async def handle_m3u8_link(client, message: Message):
-    """Handle M3U8 URL"""
+@Client.on_message((filters.regex(M3U8_REGEX) | filters.document) & filters.private)
+async def handle_m3u8_input(client, message: Message):
+    """Handle M3U8 URL or text file"""
     try:
-        # Extract M3U8 URL
-        url = M3U8_REGEX.findall(message.text)[0]
+        links = []
         
-        # Send initial message
-        progress_msg = await message.reply_text("🎯 Processing M3U8 stream...")
-        
-        # Generate output filename
-        output_file = f"/tmp/stream_{message.from_user.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ts"
-        
-        try:
-            # Download the stream
-            await download_m3u8(url, output_file)
-            
-            # Check file size
-            size = os.path.getsize(output_file)
-            if size == 0:
-                await progress_msg.edit_text("❌ Download failed: Empty file")
-                os.remove(output_file)
-                return
-                
-            if size > 4 * 1024 * 1024 * 1024:  # 4GB limit
-                await progress_msg.edit_text("❌ File too large! Max 4GB allowed.")
-                os.remove(output_file)
-                return
-            
-            # Upload to Telegram
-            await progress_msg.edit_text("✅ Uploading to Telegram...")
-            await message.reply_document(
-                output_file,
-                caption=f"📺 Stream downloaded from:\n`{url}`",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-        except Exception as e:
-            await progress_msg.edit_text(f"❌ Download failed:\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
-        
-        finally:
-            # Cleanup
+        # Handle text file
+        if message.document and message.document.mime_type == "text/plain":
+            file = await client.download_media(message.document)
             try:
-                os.remove(output_file)
-            except:
-                pass
+                with open(file, "r") as f:
+                    for line in f:
+                        links.extend(extract_m3u8_links(line.strip()))
+                os.remove(file)
+                logger.info(f"Processed text file with {len(links)} M3U8 links")
+            except Exception as e:
+                logger.error(f"Error processing text file: {e}")
+                await message.reply_text("❌ Error processing text file. Make sure it contains valid M3U8 URLs.")
+                return
+        # Handle direct URL
+        elif message.text:
+            links = extract_m3u8_links(message.text)
+            logger.info(f"Extracted {len(links)} M3U8 links from text")
+
+        if not links:
+            await message.reply_text("❌ No valid M3U8 URLs found.")
+            return
+
+        total_links = len(links)
+        logger.info(f"Processing {total_links} M3U8 links")
+
+        # Process each link
+        for index, link in enumerate(links, 1):
+            try:
+                # Send initial message
+                progress_msg = await message.reply_text(
+                    f"🎯 Processing link {index}/{total_links}:\n`{link}`",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+                # Generate output filename
+                output_file = f"/tmp/stream_{message.from_user.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ts"
+                
+                # Download the stream
+                await download_m3u8(link, output_file)
+                
+                # Check file size
+                size = os.path.getsize(output_file)
+                if size == 0:
+                    await progress_msg.edit_text("❌ Download failed: Empty file")
+                    os.remove(output_file)
+                    continue
+                    
+                if size > 4 * 1024 * 1024 * 1024:  # 4GB limit
+                    await progress_msg.edit_text("❌ File too large! Max 4GB allowed.")
+                    os.remove(output_file)
+                    continue
+                
+                # Upload to Telegram
+                await progress_msg.edit_text("✅ Uploading to Telegram...")
+                await message.reply_document(
+                    output_file,
+                    caption=f"📺 Stream {index}/{total_links} downloaded from:\n`{link}`",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+            except Exception as e:
+                await progress_msg.edit_text(
+                    f"❌ Download failed for link {index}/{total_links}:\n`{str(e)}`",
+                    parse_mode=ParseMode.MARKDOWN
+                )
             
+            finally:
+                # Cleanup
+                try:
+                    os.remove(output_file)
+                    logger.info(f"Cleaned up temporary file for link {index}/{total_links}")
+                except:
+                    pass
+
     except Exception as e:
-        logger.error(f"Error handling M3U8 link: {e}")
+        logger.error(f"Error handling M3U8 input: {e}")
         await message.reply_text("❌ An error occurred. Please try again.")
 
-# Update the help command in utube.py to include M3U8 functionality
-@Client.on_message(filters.command(["help"]) & filters.private)
-async def help_command(client, message: Message):
-    """Updated help command including M3U8"""
-    try:
-        await message.reply_text(
-            "📖 **Help Menu**\n\n"
-            "Available commands:\n"
-            "/start - Start the bot\n"
-            "/help - Show this help message\n"
-            "/ping - Check bot response\n"
-            "/utube - Download from YouTube\n"
-            "/m3u8 - Download M3U8 streams\n\n"
-            "Features:\n"
-            "1. YouTube Downloader:\n"
-            "   • Send YouTube links\n"
-            "   • Choose Audio/Video\n"
-            "   • Multiple quality options\n\n"
-            "2. M3U8 Downloader:\n"
-            "   • Send M3U8 stream URL\n"
-            "   • Downloads and combines segments\n"
-            "   • Supports live streams\n\n"
-            "Note: Maximum file size is 4GB\n\n"
-            f"Bot Started: {START_TIME}\n"
-            f"Admin: @{ADMIN_USERNAME}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    except Exception as e:
-        logger.error(f"Error in help command: {e}")
-        await message.reply_text("An error occurred. Please try again.")
+logger.info(f"M3U8 downloader plugin loaded. Started at {START_TIME}")
