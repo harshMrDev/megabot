@@ -12,63 +12,10 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Constants
-START_TIME = "2025-06-18 18:04:39"
+START_TIME = "2025-06-18 18:13:01"
 ADMIN_USERNAME = "harshMrDev"
 MAX_CONCURRENT_DOWNLOADS = 10
 CHUNK_SIZE = 1024 * 1024
-async def parse_text_file(file_path):
-    """Parse text file maintaining exact order of entries"""
-    entries = []
-    current_title = None
-    
-    try:
-        async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
-            content = await file.read()
-            lines = content.split('\n')
-            
-            i = 0
-            while i < len(lines):
-                line = lines[i].strip()
-                if not line:
-                    i += 1
-                    continue
-                
-                # If line contains m3u8, it's a video URL
-                if '.m3u8' in line and ':' in line:
-                    # The title is before the URL, separated by ':'
-                    parts = line.split(':', 1)
-                    if len(parts) == 2:
-                        title = parts[0].strip()
-                        url = parts[1].strip()
-                        entries.append({
-                            'type': 'video',
-                            'title': title,
-                            'url': url
-                        })
-                
-                # If line starts with 'PDF -' and next line is URL
-                elif line.startswith('PDF -') and i + 1 < len(lines):
-                    title = line[5:].strip()  # Remove 'PDF -' prefix
-                    if ':' in title:
-                        title = title.split(':', 1)[1].strip()
-                    next_line = lines[i + 1].strip()
-                    if next_line.startswith(('http://', 'https://')):
-                        entries.append({
-                            'type': 'pdf',
-                            'title': title,
-                            'url': next_line
-                        })
-                        i += 1  # Skip the URL line since we've processed it
-                
-                i += 1
-                
-        logger.info(f"Parsed {len(entries)} entries in order")
-        for entry in entries:
-            logger.info(f"Type: {entry['type']}, Title: {entry['title'][:50]}...")
-        return entries
-    except Exception as e:
-        logger.error(f"Error parsing file: {str(e)}")
-        return []
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -180,55 +127,70 @@ async def download_pdf(session, url, output_path):
 async def parse_text_file(file_path):
     """Parse text file maintaining exact order of entries"""
     entries = []
-    current_video = None
     
     try:
         async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
-            async for line in file:
-                line = line.strip()
+            content = await file.read()
+            lines = content.split('\n')
+            
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                
+                # Skip empty lines
                 if not line:
+                    i += 1
                     continue
                 
-                if line.startswith('PDF -'):
-                    # PDF entry
-                    if ':' in line:
-                        title = line.split(':', 1)[1].strip()
-                        next_line = None
-                        async for next_line in file:
-                            next_line = next_line.strip()
-                            if next_line.startswith(('http://', 'https://')):
-                                entries.append({
-                                    'type': 'pdf',
-                                    'title': title,
-                                    'url': next_line
-                                })
-                                break
-                elif line.startswith(('http://', 'https://')):
-                    if 'm3u8' in line:
-                        current_video = line
-                else:
-                    # This is a video title
-                    if current_video:
-                        entries.append({
-                            'type': 'video',
-                            'title': line,
-                            'url': current_video
-                        })
-                        current_video = None
-                    else:
-                        current_video = None
-                        
-        logger.info(f"Parsed {len(entries)} entries in order")
+                # If this is a video entry (contains m3u8)
+                if '.m3u8' in line:
+                    # Get the previous line as title
+                    title = lines[i-1].strip() if i > 0 else "Untitled Video"
+                    entries.append({
+                        'type': 'video',
+                        'title': title,
+                        'url': line
+                    })
+                    logger.info(f"Found video: {title[:50]}...")
+                
+                # If this is a PDF entry
+                elif line.startswith('PDF -'):
+                    title = line[5:].strip() # Remove 'PDF -' prefix
+                    if ':' in title:
+                        title = title.split(':', 1)[1].strip()
+                    
+                    # Get the next line which should be the PDF URL
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if next_line.startswith(('http://', 'https://')) and '.pdf' in next_line:
+                            entries.append({
+                                'type': 'pdf',
+                                'title': title,
+                                'url': next_line
+                            })
+                            logger.info(f"Found PDF: {title[:50]}...")
+                            i += 1  # Skip the URL line
+                
+                i += 1
+                
+        total_videos = sum(1 for entry in entries if entry['type'] == 'video')
+        total_pdfs = sum(1 for entry in entries if entry['type'] == 'pdf')
+        logger.info(f"Parsed {len(entries)} total entries: {total_videos} videos, {total_pdfs} PDFs")
+        
         return entries
     except Exception as e:
         logger.error(f"Error parsing file: {str(e)}")
+        logger.error(f"File content preview: {content[:200] if 'content' in locals() else 'No content'}")
         return []
 
 def clean_filename(title):
     """Clean filename from invalid characters"""
     if not title:
         return datetime.now().strftime("Video_%Y%m%d_%H%M%S")
-        
+    
+    # Remove [ and ] from title
+    title = title.replace('[', '').replace(']', '')
+    
     # Remove or replace invalid characters
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
@@ -288,11 +250,20 @@ async def handle_m3u8(client, message):
         if message.document and message.document.mime_type == "text/plain":
             status = await message.reply_text("📄 Reading file...")
             file = await message.download()
+            
+            # Log file content for debugging
+            try:
+                with open(file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    logger.info(f"File content preview: {content[:200]}...")
+            except Exception as e:
+                logger.error(f"Error reading file content: {str(e)}")
+            
             entries = await parse_text_file(file)
             os.remove(file)
             
             if not entries:
-                await message.reply_text("❌ No valid entries found in file")
+                await message.reply_text("❌ No valid entries found in file. Please check the format.")
                 return
 
             total = len(entries)
