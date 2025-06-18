@@ -16,6 +16,59 @@ START_TIME = "2025-06-18 18:04:39"
 ADMIN_USERNAME = "harshMrDev"
 MAX_CONCURRENT_DOWNLOADS = 10
 CHUNK_SIZE = 1024 * 1024
+async def parse_text_file(file_path):
+    """Parse text file maintaining exact order of entries"""
+    entries = []
+    current_title = None
+    
+    try:
+        async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
+            content = await file.read()
+            lines = content.split('\n')
+            
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                if not line:
+                    i += 1
+                    continue
+                
+                # If line contains m3u8, it's a video URL
+                if '.m3u8' in line and ':' in line:
+                    # The title is before the URL, separated by ':'
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        title = parts[0].strip()
+                        url = parts[1].strip()
+                        entries.append({
+                            'type': 'video',
+                            'title': title,
+                            'url': url
+                        })
+                
+                # If line starts with 'PDF -' and next line is URL
+                elif line.startswith('PDF -') and i + 1 < len(lines):
+                    title = line[5:].strip()  # Remove 'PDF -' prefix
+                    if ':' in title:
+                        title = title.split(':', 1)[1].strip()
+                    next_line = lines[i + 1].strip()
+                    if next_line.startswith(('http://', 'https://')):
+                        entries.append({
+                            'type': 'pdf',
+                            'title': title,
+                            'url': next_line
+                        })
+                        i += 1  # Skip the URL line since we've processed it
+                
+                i += 1
+                
+        logger.info(f"Parsed {len(entries)} entries in order")
+        for entry in entries:
+            logger.info(f"Type: {entry['type']}, Title: {entry['title'][:50]}...")
+        return entries
+    except Exception as e:
+        logger.error(f"Error parsing file: {str(e)}")
+        return []
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
