@@ -6,7 +6,14 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 import yt_dlp
-
+# Add this at the top after imports
+@Client.on_message(filters.command("test"))
+async def test_handler(client, message: Message):
+    logger.info("Test command received")
+    try:
+        await message.reply("Bot is working! ✅")
+    except Exception as e:
+        logger.error(f"Error in test handler: {str(e)}")
 # Set up logging
 logger = logging.getLogger(__name__)
 
