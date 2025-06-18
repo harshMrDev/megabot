@@ -2,18 +2,19 @@ import os
 import re
 import m3u8
 import aiohttp
+import aiofiles
 import asyncio
 import logging
 from datetime import datetime
+from urllib.parse import urljoin, urlparse
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Constants
-START_TIME = "2025-06-18 15:56:56"
+START_TIME = "2025-06-18 16:02:02"
 ADMIN_USERNAME = "harshMrDev"
 CHUNK_SIZE = 1024*1024  # 1MB chunks
 MAX_RETRIES = 3
-TIMEOUT = 30  # 30 seconds timeout
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,26 +23,58 @@ logger = logging.getLogger(__name__)
 # M3U8 URL pattern
 M3U8_REGEX = r'https?://[^\s<>"]+?\.m3u8(?:\?[^\s<>"]*)?'
 
-async def download_m3u8_stream(url: str, output_file: str, status_msg: Message) -> bool:
-    """Download M3U8 stream with progress updates"""
+def get_base_url(url):
+    """Get base URL for relative paths"""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}{os.path.dirname(parsed.path)}/"
+
+async def download_segment(session, url, base_url, output_file):
+    """Download a single segment"""
+    full_url = urljoin(base_url, url) if not url.startswith('http') else url
+    
+    for retry in range(MAX_RETRIES):
+        try:
+            async with session.get(full_url) as response:
+                if response.status == 200:
+                    async with aiofiles.open(output_file, 'ab') as f:
+                        await f.write(await response.read())
+                    return True
+        except Exception as e:
+            logger.error(f"Segment download error (attempt {retry+1}): {str(e)}")
+            if retry < MAX_RETRIES - 1:
+                await asyncio.sleep(1)
+    return False
+
+async def process_m3u8(url, output_file, status_msg):
+    """Process M3U8 playlist and download segments"""
     try:
         async with aiohttp.ClientSession() as session:
             # Get M3U8 playlist
-            async with session.get(url, timeout=TIMEOUT) as response:
+            async with session.get(url) as response:
                 if response.status != 200:
-                    logger.error(f"Failed to get playlist: {response.status}")
-                    return False
+                    raise Exception(f"Failed to get playlist: {response.status}")
                 
-                m3u8_text = await response.text()
-                playlist = m3u8.loads(m3u8_text)
+                playlist_text = await response.text()
+                playlist = m3u8.loads(playlist_text)
+                
+                # Handle master playlist
+                if playlist.is_endlist and playlist.playlists:
+                    # Get highest quality stream
+                    playlist_url = playlist.playlists[-1].uri
+                    if not playlist_url.startswith('http'):
+                        playlist_url = urljoin(url, playlist_url)
+                    
+                    # Get actual playlist
+                    async with session.get(playlist_url) as sub_response:
+                        if sub_response.status != 200:
+                            raise Exception(f"Failed to get sub-playlist: {sub_response.status}")
+                        playlist = m3u8.loads(await sub_response.text())
+                        url = playlist_url  # Update base URL
 
                 if not playlist.segments:
-                    logger.error("No segments found in playlist")
-                    await status_msg.edit_text("❌ Error: No segments found in playlist")
-                    return False
+                    raise Exception("No segments found in playlist")
 
-                # Get base URL for relative paths
-                base_url = url.rsplit('/', 1)[0] + '/'
+                base_url = get_base_url(url)
                 total_segments = len(playlist.segments)
                 
                 await status_msg.edit_text(
@@ -49,49 +82,39 @@ async def download_m3u8_stream(url: str, output_file: str, status_msg: Message) 
                     "⏳ Starting download..."
                 )
 
+                # Create fresh output file
+                if os.path.exists(output_file):
+                    os.remove(output_file)
+
                 # Download segments
-                async with aiofiles.open(output_file, 'wb') as outfile:
-                    for idx, segment in enumerate(playlist.segments, 1):
-                        segment_url = segment.uri
-                        if not segment_url.startswith('http'):
-                            segment_url = base_url + segment_url
+                for idx, segment in enumerate(playlist.segments, 1):
+                    success = await download_segment(
+                        session, 
+                        segment.uri, 
+                        base_url, 
+                        output_file
+                    )
+                    
+                    if not success:
+                        raise Exception(f"Failed to download segment {idx}")
 
-                        # Retry logic for segment download
-                        for retry in range(MAX_RETRIES):
-                            try:
-                                async with session.get(segment_url, timeout=TIMEOUT) as seg_response:
-                                    if seg_response.status == 200:
-                                        data = await seg_response.read()
-                                        await outfile.write(data)
-                                        break
-                                    else:
-                                        if retry == MAX_RETRIES - 1:
-                                            logger.error(f"Failed to download segment {idx}: {seg_response.status}")
-                                            return False
-                                        await asyncio.sleep(1)
-                            except Exception as e:
-                                if retry == MAX_RETRIES - 1:
-                                    logger.error(f"Error downloading segment {idx}: {str(e)}")
-                                    return False
-                                await asyncio.sleep(1)
-
-                        # Update progress every 5 segments
-                        if idx % 5 == 0 or idx == total_segments:
-                            progress = idx * 100 / total_segments
-                            await status_msg.edit_text(
-                                f"📥 Downloading: {progress:.1f}%\n"
-                                f"Segments: {idx}/{total_segments}"
-                            )
+                    # Update progress every 5 segments
+                    if idx % 5 == 0 or idx == total_segments:
+                        progress = idx * 100 / total_segments
+                        await status_msg.edit_text(
+                            f"📥 Downloading: {progress:.1f}%\n"
+                            f"Segments: {idx}/{total_segments}"
+                        )
 
                 return True
 
     except Exception as e:
-        logger.error(f"M3U8 download error: {str(e)}")
+        logger.error(f"M3U8 processing error: {str(e)}")
         await status_msg.edit_text(f"❌ Download failed: {str(e)}")
         return False
 
 @Client.on_message(filters.command("m3u8"))
-async def m3u8_command(client: Client, message: Message):
+async def m3u8_command(client, message):
     """Handle /m3u8 command"""
     await message.reply_text(
         "📥 **M3U8 Stream Downloader**\n\n"
@@ -102,8 +125,8 @@ async def m3u8_command(client: Client, message: Message):
     )
 
 @Client.on_message((filters.regex(M3U8_REGEX) | filters.document) & filters.private)
-async def handle_m3u8(client: Client, message: Message):
-    """Handle M3U8 URLs or text files containing M3U8 URLs"""
+async def handle_m3u8(client, message):
+    """Handle M3U8 URLs or text files"""
     try:
         links = []
         
@@ -141,22 +164,20 @@ async def handle_m3u8(client: Client, message: Message):
                     f"URL: `{url}`"
                 )
 
-                # Create output filename
                 output_file = f"stream_{message.from_user.id}_{int(datetime.now().timestamp())}.ts"
                 
-                # Download stream
-                success = await download_m3u8_stream(url, output_file, status_msg)
+                # Process M3U8
+                success = await process_m3u8(url, output_file, status_msg)
                 
                 if success and os.path.exists(output_file):
-                    # Check file size
                     file_size = os.path.getsize(output_file)
                     
                     if file_size == 0:
-                        await message.reply_text(f"❌ Download failed for stream {idx}: Empty file")
+                        await message.reply_text(f"❌ Stream {idx} is empty")
                         os.remove(output_file)
                         continue
                         
-                    if file_size > 2 * 1024 * 1024 * 1024:  # 2GB limit
+                    if file_size > 2000 * 1024 * 1024:  # 2GB limit
                         await message.reply_text(f"❌ Stream {idx} too large (>2GB)")
                         os.remove(output_file)
                         continue
@@ -172,7 +193,7 @@ async def handle_m3u8(client: Client, message: Message):
                     await message.reply_text(f"❌ Failed to download stream {idx}")
 
             except Exception as e:
-                logger.error(f"Error processing URL {idx}: {str(e)}")
+                logger.error(f"Error processing stream {idx}: {str(e)}")
                 await message.reply_text(f"❌ Error processing stream {idx}:\n`{str(e)}`")
                 if os.path.exists(output_file):
                     os.remove(output_file)
