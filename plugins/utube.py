@@ -16,8 +16,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Constants
-ADMIN_USERNAME = "harshMrDev"
-START_TIME = "2025-06-18 08:24:41"
+ADMIN_USERNAME = "harshMrDev"  # Your username
+START_TIME = "2025-06-18 08:35:35"  # Current UTC time
 
 YOUTUBE_REGEX = re.compile(
     r'(https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/)[\w\-\_\?&=]+)'
@@ -48,18 +48,147 @@ def make_sexy_progress_bar(downloaded, total, speed=None, eta=None, bar_length=1
         f"{extras}"
     )
 
-# Simple test command to verify bot responsiveness
-@Client.on_message(filters.command("ping"))
-async def ping_command(client, message: Message):
-    logger.info(f"Received ping command from user {message.from_user.id}")
+# Basic command handlers
+@Client.on_message(filters.command(["start"]) & filters.private)
+async def start_command(client, message: Message):
+    logger.info(f"Start command received from user {message.from_user.id}")
     try:
-        start_time = datetime.now()
-        msg = await message.reply_text("Pinging...")
-        end_time = datetime.now()
-        await msg.edit_text(f"Pong! 🏓\nResponse time: {(end_time - start_time).microseconds / 1000}ms")
-        logger.info("Successfully sent pong response")
+        await message.reply_text(
+            f"👋 Hello {message.from_user.first_name}!\n\n"
+            "🎥 I am a YouTube Downloader Bot. I can help you download videos and audio from YouTube.\n\n"
+            "Available commands:\n"
+            "/start - Start the bot\n"
+            "/help - Show help message\n"
+            "/ping - Check bot response\n"
+            "/utube - Download from YouTube\n\n"
+            f"🕒 Bot Started: {START_TIME}\n"
+            f"👨‍💻 Admin: @{ADMIN_USERNAME}",
+            parse_mode=ParseMode.MARKDOWN
+        )
     except Exception as e:
-        logger.error(f"Error in ping command: {str(e)}")
+        logger.error(f"Error in start command: {e}")
+        await message.reply_text("An error occurred. Please try again.")
+
+@Client.on_message(filters.command(["help"]) & filters.private)
+async def help_command(client, message: Message):
+    logger.info(f"Help command received from user {message.from_user.id}")
+    try:
+        await message.reply_text(
+            "📖 **Help Menu**\n\n"
+            "Here are the available commands:\n\n"
+            "/start - Start the bot\n"
+            "/help - Show this help message\n"
+            "/ping - Check if bot is working\n"
+            "/utube - Start YouTube download\n\n"
+            "To download from YouTube:\n"
+            "1. Use /utube command\n"
+            "2. Send the YouTube link\n"
+            "3. Choose format (Audio/Video)\n"
+            "4. For video, select quality\n\n"
+            "Note: Maximum file size: 4GB",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in help command: {e}")
+        await message.reply_text("An error occurred. Please try again.")
+
+@Client.on_message(filters.command(["ping"]) & filters.private)
+async def ping_command(client, message: Message):
+    logger.info(f"Ping command received from user {message.from_user.id}")
+    try:
+        start = datetime.now()
+        ping_msg = await message.reply_text("Pinging...")
+        end = datetime.now()
+        duration = (end - start).microseconds / 1000
+        await ping_msg.edit_text(f"Pong! 🏓\nResponse Time: {duration}ms")
+    except Exception as e:
+        logger.error(f"Error in ping command: {e}")
+        await message.reply_text("An error occurred. Please try again.")
+
+@Client.on_message(filters.command(["utube"]) & filters.private)
+async def utube_command(client, message: Message):
+    logger.info(f"YouTube command received from user {message.from_user.id}")
+    try:
+        await message.reply_text(
+            "Please send me a YouTube link or a text file containing YouTube links.\n\n"
+            "Example links:\n"
+            "▫️ https://youtube.com/watch?v=...\n"
+            "▫️ https://youtu.be/...\n"
+            "▫️ https://youtube.com/shorts/..."
+        )
+    except Exception as e:
+        logger.error(f"Error in utube command: {e}")
+        await message.reply_text("An error occurred. Please try again.")
+
+# Handle YouTube links
+@Client.on_message(filters.regex(YOUTUBE_REGEX) & filters.private)
+async def handle_youtube_link(client, message: Message):
+    logger.info(f"YouTube link received from user {message.from_user.id}")
+    try:
+        links = extract_youtube_links(message.text)
+        if not links:
+            await message.reply_text("No valid YouTube links found.")
+            return
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎵 Audio", callback_data="choose_audio"),
+                InlineKeyboardButton("🎥 Video", callback_data="choose_video")
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="choose_cancel")]
+        ])
+        
+        await message.reply_text(
+            "Choose download format:",
+            reply_markup=keyboard
+        )
+        user_sessions[message.from_user.id] = {"pending_links": links}
+    except Exception as e:
+        logger.error(f"Error handling YouTube link: {e}")
+        await message.reply_text("An error occurred. Please try again.")
+
+# Store user sessions
+user_sessions = {}
+
+# Handle callback queries
+@Client.on_callback_query(filters.regex('^choose_'))
+async def handle_callback(client, callback_query):
+    logger.info(f"Callback received from user {callback_query.from_user.id}: {callback_query.data}")
+    try:
+        user_id = callback_query.from_user.id
+        session = user_sessions.get(user_id, {})
+        links = session.get("pending_links", [])
+        data = callback_query.data
+
+        if data == 'choose_audio':
+            await callback_query.edit_message_text("🎵 Downloading audio...")
+            await process_and_send(client, callback_query.message, links, 'audio')
+        elif data == 'choose_video':
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("360p", callback_data="video_360"),
+                    InlineKeyboardButton("480p", callback_data="video_480"),
+                    InlineKeyboardButton("1080p", callback_data="video_1080")
+                ],
+                [InlineKeyboardButton("❌ Cancel", callback_data="choose_cancel")]
+            ])
+            await callback_query.edit_message_text(
+                "Select video quality:",
+                reply_markup=keyboard
+            )
+        elif data.startswith('video_'):
+            quality = data.replace('video_', '')
+            await callback_query.edit_message_text(f"🎥 Downloading {quality}p video...")
+            await process_and_send(client, callback_query.message, links, data)
+        elif data == 'choose_cancel':
+            await callback_query.edit_message_text("❌ Download cancelled.")
+        
+        if data != 'choose_video':
+            user_sessions.pop(user_id, None)
+            
+    except Exception as e:
+        logger.error(f"Error in callback: {e}")
+        await callback_query.edit_message_text("❌ An error occurred. Please try again.")
 
 async def download_youtube(link, mode, cookies_file=None, progress_callback=None):
     logger.info(f"Starting download for {link} in mode {mode}")
@@ -89,7 +218,7 @@ async def download_youtube(link, mode, cookies_file=None, progress_callback=None
             "default_search": "auto",
             "source_address": "0.0.0.0"
         }
-        
+
         if mode == 'audio':
             ydl_opts.update({
                 'format': 'bestaudio/best',
@@ -139,117 +268,6 @@ async def download_youtube(link, mode, cookies_file=None, progress_callback=None
 
     return await asyncio.to_thread(get_stream)
 
-# Store user sessions
-user_sessions = {}
-
-@Client.on_message(filters.command("start"))
-async def start(client, message: Message):
-    logger.info(f"Received start command from user {message.from_user.id}")
-    try:
-        await message.reply(
-            "🎉 *YouTube Downloader Bot*\n\n"
-            "Send a YouTube link (or a .txt file with links).\n"
-            "I'll ask for Audio/Video and, if video, ask for quality.\n"
-            "Files up to 4GB supported.\n\n"
-            f"Bot Started at: `{START_TIME}`\n"
-            f"Admin: @{ADMIN_USERNAME}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        logger.info("Successfully sent start message")
-    except Exception as e:
-        logger.error(f"Error in start command: {str(e)}")
-
-@Client.on_message(filters.command("help"))
-async def help_command(client, message: Message):
-    logger.info(f"Received help command from user {message.from_user.id}")
-    try:
-        await message.reply(
-            "📖 *Help Menu*\n\n"
-            "1. Send a YouTube link or a .txt file with links\n"
-            "2. Choose Audio or Video format\n"
-            "3. For video, select quality (360p/480p/1080p)\n"
-            "4. Wait for processing and download\n\n"
-            "Commands:\n"
-            "/start - Start the bot\n"
-            "/help - Show this help message\n"
-            "/ping - Check bot's response time\n\n"
-            "Note: Files up to 4GB are supported\n"
-            f"Admin: @{ADMIN_USERNAME}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        logger.info("Successfully sent help message")
-    except Exception as e:
-        logger.error(f"Error in help command: {str(e)}")
-
-@Client.on_message(filters.text | filters.document)
-async def handle_message(client, message: Message):
-    logger.info(f"Received message from user {message.from_user.id}")
-    try:
-        links = []
-        if message.document and message.document.mime_type == "text/plain":
-            file = await client.download_media(message.document)
-            with open(file, "r") as f:
-                for line in f:
-                    links += extract_youtube_links(line.strip())
-            os.remove(file)
-            logger.info(f"Processed text file with {len(links)} links")
-        elif message.text:
-            links = extract_youtube_links(message.text)
-            logger.info(f"Extracted {len(links)} links from text message")
-
-        if not links:
-            await message.reply("No YouTube links found.")
-            return
-
-        user_sessions[message.from_user.id] = {"pending_links": links}
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎵 Audio", callback_data="choose_audio"),
-             InlineKeyboardButton("📺 Video", callback_data="choose_video")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="choose_cancel")]
-        ])
-        await message.reply("Choose format:", reply_markup=keyboard)
-        logger.info(f"Sent format selection to user {message.from_user.id}")
-    except Exception as e:
-        logger.error(f"Error handling message: {str(e)}")
-        await message.reply("Sorry, an error occurred while processing your request.")
-
-@Client.on_callback_query()
-async def inline_callback(client, callback_query):
-    logger.info(f"Received callback query from user {callback_query.from_user.id}: {callback_query.data}")
-    try:
-        user_id = callback_query.from_user.id
-        session = user_sessions.get(user_id, {})
-        links = session.get("pending_links", [])
-        data = callback_query.data
-
-        if data == 'choose_audio':
-            await callback_query.edit_message_text("Downloading audio...")
-            await process_and_send(client, callback_query.message, links, 'audio')
-            user_sessions.pop(user_id, None)
-        elif data == 'choose_video':
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📺 360p", callback_data='video_360'),
-                 InlineKeyboardButton("📺 480p", callback_data='video_480'),
-                 InlineKeyboardButton("📺 1080p", callback_data='video_1080')],
-                [InlineKeyboardButton("❌ Cancel", callback_data='choose_cancel')]
-            ])
-            await callback_query.edit_message_text("Choose video quality:", reply_markup=keyboard)
-            session["awaiting_quality"] = True
-        elif data in ['video_360', 'video_480', 'video_1080']:
-            quality_label = data.replace("video_", "")
-            await callback_query.edit_message_text(f"Downloading {quality_label}p video...")
-            await process_and_send(client, callback_query.message, links, data)
-            user_sessions.pop(user_id, None)
-        elif data == 'choose_cancel':
-            await callback_query.edit_message_text("Operation cancelled.")
-            user_sessions.pop(user_id, None)
-        else:
-            await callback_query.edit_message_text("Unknown action.")
-        logger.info(f"Successfully processed callback {data} for user {user_id}")
-    except Exception as e:
-        logger.error(f"Error in callback: {str(e)}")
-        await callback_query.edit_message_text("Sorry, an error occurred.")
-
 async def process_and_send(client, message, links, mode):
     logger.info(f"Processing {len(links)} links in mode {mode}")
     cookies_file = 'cookies.txt' if os.path.exists('cookies.txt') else None
@@ -283,6 +301,7 @@ async def process_and_send(client, message, links, mode):
                 asyncio.run_coroutine_threadsafe(edit_progress(d), client.loop)
 
             file_path = await download_youtube(link, mode, cookies_file, progress_hook)
+            
             if not os.path.exists(file_path):
                 await message.reply("❌ Download failed, file not found!")
                 continue
