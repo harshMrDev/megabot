@@ -9,7 +9,7 @@ from pyrogram.errors import ApiIdInvalid, AccessTokenInvalid, AuthKeyUnregistere
 
 # Constants
 ADMIN_USERNAME = "harshMrDev"
-START_TIME = "2025-06-18 12:40:28"
+START_TIME = "2025-06-18 13:32:14"
 
 # Set up logging
 logging.basicConfig(
@@ -86,7 +86,8 @@ async def set_commands():
             BotCommand("start", "Start the bot"),
             BotCommand("help", "Show help message"),
             BotCommand("ping", "Check bot response"),
-            BotCommand("utube", "Download from YouTube")
+            BotCommand("utube", "Download from YouTube"),
+            BotCommand("m3u8", "Download M3U8 streams")
         ]
         await app.set_bot_commands(commands)
         logger.info("Bot commands set successfully")
