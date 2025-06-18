@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 ADMIN_USERNAME = "harshMrDev"
-START_TIME = "2025-06-18 13:32:14"
+START_TIME = "2025-06-18 13:50:08"
 
 # Regular expression for M3U8 URLs
 M3U8_REGEX = re.compile(
@@ -104,14 +104,14 @@ async def download_m3u8(url, output_path):
         raise
 
 @Client.on_message(filters.command(["m3u8"]) & filters.private)
-async def m3u8_command(client, message: Message):
+async def m3u8_command(client: Client, message: Message):
     """Handle /m3u8 command"""
     try:
         await message.reply_text(
             "📺 **M3U8 Stream Downloader**\n\n"
             "You can:\n"
             "1. Send an M3U8 URL directly\n"
-            "2. Send a .txt file containing multiple M3U8 URLs (one per line)\n\n"
+            "2. Send a .txt file containing multiple M3U8 URLs\n\n"
             "Example URLs:\n"
             "▫️ https://example.com/stream.m3u8\n"
             "▫️ https://live.stream.com/index.m3u8\n\n"
@@ -125,7 +125,7 @@ async def m3u8_command(client, message: Message):
         await message.reply_text("An error occurred. Please try again.")
 
 @Client.on_message((filters.regex(M3U8_REGEX) | filters.document) & filters.private)
-async def handle_m3u8_input(client, message: Message):
+async def handle_m3u8_input(client: Client, message: Message):
     """Handle M3U8 URL or text file"""
     try:
         links = []
