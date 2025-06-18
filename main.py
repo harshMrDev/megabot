@@ -6,7 +6,7 @@ from pyrogram import Client, idle
 from pyrogram.types import BotCommand
 from pyrogram.errors import ApiIdInvalid, AccessTokenInvalid, AuthKeyUnregistered
 
-# Set up logging to both file and console
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -30,11 +30,12 @@ if missing_vars:
     raise SystemExit(error_msg)
 
 try:
-    # Log the values (but mask them for security)
+    # Get environment variables
     api_id = int(os.environ["API_ID"])
     api_hash = os.environ["API_HASH"]
     bot_token = os.environ["BOT_TOKEN"]
     
+    # Log the values (but mask them for security)
     logger.info(f"API_ID: {'*' * len(str(api_id))}")
     logger.info(f"API_HASH: {api_hash[:4]}...{api_hash[-4:]}")
     logger.info(f"BOT_TOKEN: {bot_token[:4]}...{bot_token[-4:]}")
@@ -52,6 +53,21 @@ app = Client(
     plugins=dict(root="plugins"),
     in_memory=True  # Don't save session files
 )
+
+async def set_commands():
+    """Set bot commands with error handling"""
+    try:
+        commands = [
+            BotCommand("start", "Start the bot"),
+            BotCommand("help", "Show help message"),
+            BotCommand("ping", "Check bot response"),
+            BotCommand("utube", "Download from YouTube")
+        ]
+        await app.set_bot_commands(commands)
+        logger.info("Bot commands set successfully")
+    except Exception as e:
+        logger.error(f"Failed to set bot commands: {e}")
+        raise
 
 async def check_token_validity():
     """Check if the bot token is valid by making a simple API call"""
@@ -71,19 +87,6 @@ async def check_token_validity():
     except Exception as e:
         logger.error(f"Unexpected error checking bot token: {str(e)}")
         return False
-
-async def set_commands():
-    """Set bot commands with error handling"""
-    try:
-        commands = [
-            BotCommand("start", "Start the bot"),
-            BotCommand("help", "Show help"),
-        ]
-        await app.set_bot_commands(commands)
-        logger.info("Bot commands set successfully")
-    except Exception as e:
-        logger.error(f"Failed to set bot commands: {str(e)}")
-        # Don't raise here, as this is not critical
 
 async def main():
     try:
@@ -126,5 +129,3 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Fatal error: {str(e)}")
         raise
-    finally:
-        logger.info("Bot process finished")
