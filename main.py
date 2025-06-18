@@ -1,208 +1,65 @@
 import os
 import sys
-import time
 import logging
-import asyncio
 from datetime import datetime
 from pyrogram import Client, idle, filters
-from pyrogram.types import BotCommand
-from pyrogram.errors import ApiIdInvalid, AccessTokenInvalid, AuthKeyUnregistered, FloodWait
+from pyrogram.types import Message, BotCommand
+from pyrogram.errors import FloodWait
 
 # Constants
 ADMIN_USERNAME = "harshMrDev"
-START_TIME = "2025-06-18 14:17:04"
+START_TIME = "2025-06-18 14:20:50"
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+
 logger = logging.getLogger(__name__)
 
-# Print startup message
-print(f"Bot starting... Time: {START_TIME}")
-logger.info(f"Bot initialization started by {ADMIN_USERNAME}")
-
-# Environment variable check with detailed logging
-required_vars = ['API_ID', 'API_HASH', 'BOT_TOKEN']
-missing_vars = [var for var in required_vars if var not in os.environ]
-if missing_vars:
-    error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
-    logger.error(error_msg)
-    raise SystemExit(error_msg)
-
-try:
-    # Get environment variables
-    api_id = int(os.environ["API_ID"])
-    api_hash = os.environ["API_HASH"]
-    bot_token = os.environ["BOT_TOKEN"]
-    
-    # Log the values (but mask them for security)
-    logger.info(f"API_ID: {'*' * len(str(api_id))}")
-    logger.info(f"API_HASH: {api_hash[:4]}...{api_hash[-4:]}")
-    logger.info(f"BOT_TOKEN: {bot_token[:4]}...{bot_token[-4:]}")
-    logger.info(f"Admin Username: @{ADMIN_USERNAME}")
-    
-except ValueError as e:
-    logger.error(f"API_ID must be an integer, got: {os.environ.get('API_ID')}")
-    raise SystemExit("Invalid API_ID")
-
-# Initialize the client with explicit error handling
+# Initialize bot
 app = Client(
     "youtube_downloader_bot",
-    api_id=api_id,
-    api_hash=api_hash,
-    bot_token=bot_token,
-    plugins=dict(root="plugins"),
-    in_memory=True  # Don't save session files
+    api_id=os.environ.get('API_ID'),
+    api_hash=os.environ.get('API_HASH'),
+    bot_token=os.environ.get('BOT_TOKEN'),
+    plugins=dict(root="plugins")
 )
 
-async def check_token_validity():
-    """Check if the bot token is valid by making a simple API call"""
-    try:
-        me = await app.get_me()
-        logger.info(f"Bot token is valid for @{me.username}")
-        return True
-    except ApiIdInvalid:
-        logger.error("API ID/Hash are invalid")
-        return False
-    except AccessTokenInvalid:
-        logger.error("Bot token is invalid")
-        return False
-    except AuthKeyUnregistered:
-        logger.error("Bot token is unregistered")
-        return False
-    except Exception as e:
-        logger.error(f"Unexpected error checking bot token: {str(e)}")
-        return False
+# Command list
+COMMANDS = [
+    BotCommand("start", "Start the bot"),
+    BotCommand("help", "Show help message"),
+    BotCommand("ping", "Check bot response"),
+    BotCommand("utube", "Download from YouTube"),
+    BotCommand("m3u8", "Download M3U8 streams")
+]
 
-async def set_commands():
-    """Set bot commands with error handling"""
-    try:
-        commands = [
-            BotCommand("start", "Start the bot"),
-            BotCommand("help", "Show help message"),
-            BotCommand("ping", "Check bot response"),
-            BotCommand("utube", "Download from YouTube"),
-            BotCommand("m3u8", "Download M3U8 streams")
-        ]
-        await app.set_bot_commands(commands)
-        logger.info("Bot commands set successfully")
-    except Exception as e:
-        logger.error(f"Failed to set bot commands: {e}")
-
-async def initialize_bot():
-    """Initialize bot settings and configurations"""
-    try:
-        # Check token validity
-        if not await check_token_validity():
-            logger.error("Token validation failed")
-            return False
-        
-        # Set commands
-        await set_commands()
-        
-        # Log successful initialization
-        logger.info("Bot initialization completed successfully")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error during bot initialization: {e}")
-        return False
-
-@app.on_message(filters.command("start") & filters.private)
-async def start_command(client, message):
-    """Start command handler"""
-    try:
-        await message.reply_text(
-            f"👋 Hello {message.from_user.first_name}!\n\n"
-            "🎥 I am a YouTube and M3U8 Downloader Bot.\n\n"
-            "Available commands:\n"
-            "/start - Start the bot\n"
-            "/help - Show help message\n"
-            "/ping - Check bot response\n"
-            "/utube - Download from YouTube\n"
-            "/m3u8 - Download M3U8 streams\n\n"
-            f"🕒 Bot Started: {START_TIME}\n"
-            f"👨‍💻 Admin: @{ADMIN_USERNAME}"
-        )
-    except Exception as e:
-        logger.error(f"Error in start command: {e}")
-        await message.reply_text("An error occurred. Please try again.")
+@app.on_message(filters.command(["start", "help"]) & filters.private)
+async def start_command(client: Client, message: Message):
+    """Handle /start and /help commands"""
+    await message.reply_text(
+        f"👋 Hello {message.from_user.mention}!\n\n"
+        "🎥 I am a YouTube and M3U8 Downloader Bot.\n\n"
+        "Available commands:\n"
+        "/start - Start the bot\n"
+        "/help - Show help message\n"
+        "/ping - Check bot response\n"
+        "/utube - Download from YouTube\n"
+        "/m3u8 - Download M3U8 streams\n\n"
+        f"🕒 Bot Started: {START_TIME}\n"
+        f"👨‍💻 Admin: @{ADMIN_USERNAME}"
+    )
 
 @app.on_message(filters.command("ping") & filters.private)
-async def ping_command(client, message):
-    """Ping command handler"""
-    try:
-        start = datetime.now()
-        msg = await message.reply_text("Pinging...")
-        end = datetime.now()
-        duration = (end - start).microseconds / 1000
-        await msg.edit_text(f"Pong! 🏓\nResponse Time: {duration}ms")
-    except Exception as e:
-        logger.error(f"Error in ping command: {e}")
-        await message.reply_text("An error occurred. Please try again.")
-
-async def main():
-    """Main bot execution function"""
-    try:
-        logger.info(f"Starting bot at {START_TIME}")
-        
-        # Start the client using context manager
-        async with app:
-            # Initialize bot
-            if not await initialize_bot():
-                logger.error("Bot initialization failed")
-                return
-            
-            # Log successful startup
-            me = await app.get_me()
-            logger.info(f"Bot is running as @{me.username}")
-            logger.info("Bot is now listening for updates")
-            
-            # Keep the bot running
-            await idle()
-            
-    except FloodWait as e:
-        logger.warning(f"FloodWait: Need to wait for {e.value} seconds")
-        await asyncio.sleep(e.value)
-        return await main()
-    except Exception as e:
-        logger.error(f"Critical error in main: {str(e)}")
-        raise
-    finally:
-        logger.info("Stopping bot...")
-        if app.is_connected:
-            await app.stop()
-            logger.info("Bot stopped successfully")
-
-def cleanup():
-    """Cleanup function to handle bot shutdown"""
-    try:
-        # Remove any temporary files or cleanup tasks here
-        if os.path.exists('bot.log'):
-            with open('bot.log', 'a') as f:
-                f.write(f"\nBot stopped at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
-
-def run_bot():
-    """Run the bot with proper error handling"""
-    try:
-        logger.info(f"Starting bot process as {ADMIN_USERNAME}")
-        app.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {str(e)}")
-        raise
-    finally:
-        cleanup()
-        logger.info("Bot process finished")
+async def ping_command(client: Client, message: Message):
+    """Handle /ping command"""
+    start = datetime.now()
+    m = await message.reply_text("Pinging...")
+    end = datetime.now()
+    await m.edit_text(f"🏓 Pong!\nResponse Time: {(end-start).microseconds / 1000}ms")
 
 if __name__ == "__main__":
-    run_bot()
+    print(f"Bot Starting... Time: {START_TIME}")
+    app.run()
