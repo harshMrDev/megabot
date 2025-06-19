@@ -355,14 +355,14 @@ async def parse_text_file(file_path):
                             break
                         
                         # Check for PDF entries - multiple patterns
-                        if (next_line.lower().startswith(('PDF', 'PDF-', 'PDF:', 'PDF ')) or 
-                            'PDF' in next_line.lower()):
+                        if (next_line.lower().startswith(('pdf', 'pdf-', 'pdf:', 'pdf ')) or 
+                            'pdf' in next_line.lower()):
                             
                             # Extract PDF title
                             pdf_title = next_line
-                            if next_line.lower().startswith('PDF'):
+                            if next_line.lower().startswith('pdf'):
                                 # Remove PDF prefix variations
-                                for prefix in ['PDF-', 'PDF:', 'PDF ', 'PDF']:
+                                for prefix in ['pdf-', 'pdf:', 'pdf ', 'pdf']:
                                     if next_line.lower().startswith(prefix):
                                         pdf_title = next_line[len(prefix):].strip()
                                         break
