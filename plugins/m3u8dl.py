@@ -334,34 +334,57 @@ async def parse_text_file(file_path):
                     if len(parts) == 2:
                         title = parts[0].strip()
                         url = 'http' + parts[1].strip()
-                        entries.append({
+                        
+                        # Create entry with video info
+                        entry = {
                             'type': 'video',
                             'title': title,
-                            'url': url
-                        })
-                        logger.info(f"Found video: {title[:50]}... | {url[:50]}...")
-                
-                # Handle PDF entries
-                elif line.startswith('PDF -'):
-                    pdf_title = line[5:].strip()
-                    if ':' in pdf_title:
-                        pdf_title = pdf_title.split(':', 1)[1].strip()
-                    
-                    if i + 1 < len(lines):
-                        next_line = lines[i + 1].strip()
-                        if next_line.startswith(('http://', 'https://')) and '.pdf' in next_line:
-                            entries.append({
-                                'type': 'pdf',
-                                'title': pdf_title,
-                                'url': next_line
-                            })
-                            logger.info(f"Found PDF: {pdf_title[:50]}... | {next_line[:50]}...")
-                            i += 1
+                            'url': url,
+                            'pdfs': []  # Initialize empty PDF list
+                        }
+                        
+                        # Look ahead for associated PDFs with same title
+                        next_idx = i + 1
+                        while next_idx < len(lines):
+                            next_line = lines[next_idx].strip()
+                            
+                            # Check if it's a PDF line
+                            if next_line.startswith('PDF -'):
+                                pdf_title = next_line[5:].strip()
+                                if ':' in pdf_title:
+                                    pdf_title = pdf_title.split(':', 1)[1].strip()
+                                
+                                # Check if PDF title matches video title (ignoring brackets and extra characters)
+                                video_title_clean = title.replace('[', '').replace(']', '').strip()
+                                pdf_title_clean = pdf_title.replace('[', '').replace(']', '').strip()
+                                
+                                if pdf_title_clean in video_title_clean or video_title_clean in pdf_title_clean:
+                                    # Look for PDF URL in next line
+                                    if next_idx + 1 < len(lines):
+                                        pdf_url_line = lines[next_idx + 1].strip()
+                                        if pdf_url_line.startswith(('http://', 'https://')) and '.pdf' in pdf_url_line:
+                                            entry['pdfs'].append({
+                                                'title': pdf_title,
+                                                'url': pdf_url_line
+                                            })
+                                            logger.info(f"Associated PDF found: {pdf_title[:50]}... with video: {title[:50]}...")
+                                            next_idx += 2  # Skip PDF title and URL lines
+                                            continue
+                                
+                                next_idx += 1
+                            else:
+                                # If we hit another video or unrelated content, stop looking for PDFs
+                                if '.m3u8' in next_line:
+                                    break
+                                next_idx += 1
+                        
+                        entries.append(entry)
+                        logger.info(f"Found video: {title[:50]}... with {len(entry['pdfs'])} associated PDFs")
                 
                 i += 1
                 
-        total_videos = sum(1 for entry in entries if entry['type'] == 'video')
-        total_pdfs = sum(1 for entry in entries if entry['type'] == 'pdf')
+        total_videos = len(entries)
+        total_pdfs = sum(len(entry['pdfs']) for entry in entries)
         logger.info(f"Found {total_videos} videos and {total_pdfs} PDFs")
         return entries
 
@@ -369,8 +392,8 @@ async def parse_text_file(file_path):
         logger.error(f"Error parsing file: {str(e)}")
         return []
 
-async def convert_to_format(input_file, output_format='mp4'):
-    """Convert file to specified format using FFmpeg"""
+async def convert_to_format(input_file, output_format='mkv'):
+    """Convert file to specified format using FFmpeg - Default to MKV for videos"""
     try:
         output_file = input_file.rsplit('.', 1)[0] + f'.{output_format}'
         
@@ -381,6 +404,16 @@ async def convert_to_format(input_file, output_format='mp4'):
                 '-acodec', 'libmp3lame',
                 '-ab', '192k',
                 '-ar', '44100',
+                '-y',
+                output_file
+            ]
+        elif output_format == 'mkv':
+            # Use MKV container with copy codecs for best quality and compatibility
+            cmd = [
+                'ffmpeg', '-i', input_file,
+                '-c:v', 'copy',  # Copy video codec
+                '-c:a', 'copy',  # Copy audio codec
+                '-f', 'matroska',  # Specify Matroska container (MKV)
                 '-y',
                 output_file
             ]
@@ -411,7 +444,8 @@ async def convert_to_format(input_file, output_format='mp4'):
 async def handle_m3u8(client, message):
     """Handle M3U8 URLs or text files"""
     try:
-        output_format = 'mp3' if message.reply_to_message and message.reply_to_message.text and '/mp3' in message.reply_to_message.text else 'mp4'
+        # Determine output format - default to MKV for videos, MP3 if specifically requested
+        output_format = 'mp3' if message.reply_to_message and message.reply_to_message.text and '/mp3' in message.reply_to_message.text else 'mkv'
         
         if message.document and message.document.mime_type == "text/plain":
             status = await message.reply_text("📄 Reading file...")
@@ -425,109 +459,102 @@ async def handle_m3u8(client, message):
 
             total = len(entries)
             status_msg = await message.reply_text(
-                f"🔍 Found {total} entries\n"
+                f"🔍 Found {total} video entries\n"
                 "⏳ Processing in order..."
             )
 
             async with aiohttp.ClientSession() as session:
-                i = 0
-                while i < len(entries):
+                for i, entry in enumerate(entries):
                     try:
-                        entry = entries[i]
-                        if entry['type'] == 'video':
-                            title = entry['title']
-                            url = entry['url']
-                            clean_title = clean_filename(title)
+                        title = entry['title']
+                        url = entry['url']
+                        clean_title = clean_filename(title)
+                        
+                        await safe_edit_message(
+                            status_msg,
+                            f"📥 Processing {i+1}/{total}\n"
+                            f"Title: {clean_title}\n"
+                            f"PDFs to download: {len(entry['pdfs'])}"
+                        )
+
+                        # Download video
+                        ts_file = f"temp_{message.from_user.id}_{int(datetime.now().timestamp())}.ts"
+                        downloaded_file = await process_m3u8(url, ts_file, status_msg)
+                        
+                        if downloaded_file and os.path.exists(downloaded_file):
+                            await safe_edit_message(status_msg, f"🔄 Converting to {output_format.upper()}: {clean_title}")
+                            result_file = await convert_to_format(downloaded_file, output_format)
+                            
+                            if result_file and os.path.exists(result_file):
+                                start_time = time.time()
+                                try:
+                                    format_emoji = "🎵" if output_format == 'mp3' else "🎥"
+                                    await message.reply_document(
+                                        result_file,
+                                        caption=f"{format_emoji} {clean_title}",
+                                        file_name=f"{clean_title}.{output_format}",
+                                        progress=progress,
+                                        progress_args=(
+                                            status_msg,
+                                            start_time,
+                                            f"📤 Uploading {output_format.upper()}: {clean_title}"
+                                        )
+                                    )
+                                except Exception as e:
+                                    if "FLOOD_WAIT" in str(e):
+                                        await handle_flood_wait(e, status_msg)
+                                        continue
+                                finally:
+                                    if os.path.exists(result_file):
+                                        os.remove(result_file)
+                        
+                        # Process associated PDFs in order
+                        for pdf_idx, pdf_entry in enumerate(entry['pdfs']):
+                            pdf_title = pdf_entry['title']
+                            pdf_url = pdf_entry['url']
+                            pdf_clean_title = clean_filename(pdf_title)
                             
                             await safe_edit_message(
                                 status_msg,
-                                f"📥 Processing {i+1}/{total}\n"
-                                f"Title: {clean_title}"
+                                f"📚 Downloading PDF {pdf_idx+1}/{len(entry['pdfs'])}\n"
+                                f"For: {clean_title}\n"
+                                f"PDF: {pdf_clean_title}"
                             )
-
-                            # Download video
-                            ts_file = f"temp_{message.from_user.id}_{int(datetime.now().timestamp())}.ts"
-                            downloaded_file = await process_m3u8(url, ts_file, status_msg)
                             
-                            if downloaded_file and os.path.exists(downloaded_file):
-                                await safe_edit_message(status_msg, f"🔄 Converting: {clean_title}")
-                                result_file = await convert_to_format(downloaded_file, output_format)
-                                
-                                if result_file and os.path.exists(result_file):
-                                    start_time = time.time()
-                                    try:
-                                        await message.reply_document(
-                                            result_file,
-                                            caption=f"🎥 {clean_title}",
-                                            file_name=f"{clean_title}.{output_format}",
-                                            progress=progress,
-                                            progress_args=(
-                                                status_msg,
-                                                start_time,
-                                                f"📤 Uploading: {clean_title}"
-                                            )
+                            pdf_path = f"temp_pdf_{message.from_user.id}_{int(datetime.now().timestamp())}_{pdf_idx}.pdf"
+                            if await download_pdf(session, pdf_url, pdf_path):
+                                start_time = time.time()
+                                try:
+                                    await message.reply_document(
+                                        pdf_path,
+                                        caption=f"📚 {pdf_clean_title}\n📹 Related to: {clean_title}",
+                                        file_name=f"{pdf_clean_title}.pdf",
+                                        progress=progress,
+                                        progress_args=(
+                                            status_msg,
+                                            start_time,
+                                            f"📤 Uploading PDF: {pdf_clean_title}"
                                         )
-                                    except Exception as e:
-                                        if "FLOOD_WAIT" in str(e):
-                                            await handle_flood_wait(e, status_msg)
-                                            continue
-                                    finally:
-                                        if os.path.exists(result_file):
-                                            os.remove(result_file)
-                            
-                            # Process associated PDFs
-                            next_idx = i + 1
-                            while next_idx < len(entries) and entries[next_idx]['type'] == 'pdf':
-                                pdf_entry = entries[next_idx]
-                                if pdf_entry['title'].strip() == title.strip():
-                                    pdf_url = pdf_entry['url']
-                                    
-                                    await safe_edit_message(
-                                        status_msg,
-                                        f"📥 Downloading PDF for: {clean_title}"
                                     )
-                                    
-                                    pdf_path = f"temp_pdf_{message.from_user.id}_{int(datetime.now().timestamp())}.pdf"
-                                    if await download_pdf(session, pdf_url, pdf_path):
-                                        start_time = time.time()
-                                        try:
-                                            await message.reply_document(
-                                                pdf_path,
-                                                caption=f"📚 {clean_title}",
-                                                file_name=f"{clean_title}.pdf",
-                                                progress=progress,
-                                                progress_args=(
-                                                    status_msg,
-                                                    start_time,
-                                                    f"📤 Uploading PDF: {clean_title}"
-                                                )
-                                            )
-                                        except Exception as e:
-                                            if "FLOOD_WAIT" in str(e):
-                                                await handle_flood_wait(e, status_msg)
-                                                continue
-                                        finally:
-                                            if os.path.exists(pdf_path):
-                                                os.remove(pdf_path)
-                                    else:
-                                        await message.reply_text(f"❌ Failed to download PDF: {clean_title}")
-                                    
-                                    next_idx += 1
-                                    i = next_idx - 1
-                                else:
-                                    break
-                            
-                        i += 1
+                                except Exception as e:
+                                    if "FLOOD_WAIT" in str(e):
+                                        await handle_flood_wait(e, status_msg)
+                                        continue
+                                finally:
+                                    if os.path.exists(pdf_path):
+                                        os.remove(pdf_path)
+                            else:
+                                await message.reply_text(f"❌ Failed to download PDF: {pdf_clean_title}")
+                        
                         await asyncio.sleep(MIN_DELAY_BETWEEN_ENTRIES)
 
                     except Exception as e:
                         logger.error(f"Error processing entry {i+1}: {str(e)}")
-                        await message.reply_text(f"❌ Error processing entry {i+1}")
-                        i += 1
+                        await message.reply_text(f"❌ Error processing entry {i+1}: {str(e)}")
                         # Clean up any remaining files
-                        for f in [ts_file, result_file]:
-                            if 'f' in locals() and os.path.exists(f):
-                                os.remove(f)
+                        for temp_file in [ts_file]:
+                            if 'temp_file' in locals() and os.path.exists(temp_file):
+                                os.remove(temp_file)
 
             await safe_edit_message(status_msg, "✅ All files processed!")
 
@@ -538,21 +565,22 @@ async def handle_m3u8(client, message):
             downloaded_file = await process_m3u8(message.text, ts_file, status_msg)
             
             if downloaded_file and os.path.exists(downloaded_file):
-                await safe_edit_message(status_msg, "🔄 Converting...")
+                await safe_edit_message(status_msg, f"🔄 Converting to {output_format.upper()}...")
                 result_file = await convert_to_format(downloaded_file, output_format)
                 
                 if result_file and os.path.exists(result_file):
                     start_time = time.time()
                     try:
+                        format_emoji = "🎵" if output_format == 'mp3' else "🎥"
                         await message.reply_document(
                             result_file,
-                            caption="🎥 Video",
+                            caption=f"{format_emoji} Video",
                             file_name=f"video.{output_format}",
                             progress=progress,
                             progress_args=(
                                 status_msg,
                                 start_time,
-                                "📤 Uploading..."
+                                f"📤 Uploading {output_format.upper()}..."
                             )
                         )
                     except Exception as e:
@@ -560,13 +588,13 @@ async def handle_m3u8(client, message):
                             await handle_flood_wait(e, status_msg)
                             await message.reply_document(
                                 result_file,
-                                caption="🎥 Video",
+                                caption=f"{format_emoji} Video",
                                 file_name=f"video.{output_format}",
                                 progress=progress,
                                 progress_args=(
                                     status_msg,
                                     time.time(),
-                                    "📤 Uploading..."
+                                    f"📤 Uploading {output_format.upper()}..."
                                 )
                             )
                     finally:
@@ -595,7 +623,8 @@ async def handle_command(client, message):
             "[Category] Title 1:URL 1\n"
             "PDF - [Category] Title 1\n"
             "PDF_URL 1\n\n"
-            "[Category] Title 2:URL 2"
+            "[Category] Title 2:URL 2\n\n"
+            "📌 **Audio will be extracted as MP3**"
         )
     else:
         await message.reply_text(
@@ -609,6 +638,7 @@ async def handle_command(client, message):
             "PDF_URL 1\n\n"
             "[Category] Title 2:URL 2\n\n"
             "Commands:\n"
-            "/m3u8 - Download as MP4\n"
-            "/mp3 - Extract audio as MP3"
+            "/m3u8 - Download as **MKV** (High Quality)\n"
+            "/mp3 - Extract audio as MP3\n\n"
+            "📌 **Videos are downloaded in MKV format for best quality**"
         )
