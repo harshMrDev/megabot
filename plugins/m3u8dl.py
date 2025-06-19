@@ -316,7 +316,7 @@ async def download_pdf(session, url, output_path):
         return False
 
 async def parse_text_file(file_path):
-    """Parse text file maintaining exact order of entries"""
+    """Parse text file maintaining exact order of entries - FIXED VERSION"""
     entries = []
     
     try:
@@ -324,113 +324,115 @@ async def parse_text_file(file_path):
             content = await file.read()
             lines = [line.strip() for line in content.split('\n') if line.strip()]
             
-            # Debug: Log first few lines to understand the format
-            logger.info(f"Total lines in file: {len(lines)}")
-            for idx, line in enumerate(lines[:10]):
-                logger.info(f"Line {idx}: {line}")
+        logger.info(f"Total lines in file: {len(lines)}")
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i]
             
-            i = 0
-            while i < len(lines):
-                line = lines[i]
-                
-                # Handle video entries with [Category] Title format
-                if '.m3u8' in line:
-                    parts = line.rsplit(':http', 1)
-                    if len(parts) == 2:
-                        title = parts[0].strip()
-                        url = 'http' + parts[1].strip()
+            # Handle video entries with [Category] Title format
+            if '.m3u8' in line:
+                parts = line.rsplit(':', 1)
+                if len(parts) == 2 and parts[1].startswith('http'):
+                    title = parts[0].strip()
+                    url = parts[1].strip()
+                    
+                    # Create entry with video info
+                    entry = {
+                        'type': 'video',
+                        'title': title,
+                        'url': url,
+                        'pdfs': []  # Initialize empty PDF list
+                    }
+                    
+                    # Look ahead for associated PDFs - IMPROVED LOGIC
+                    next_idx = i + 1
+                    while next_idx < len(lines):
+                        next_line = lines[next_idx].strip()
                         
-                        # Create entry with video info
-                        entry = {
-                            'type': 'video',
-                            'title': title,
-                            'url': url,
-                            'pdfs': []  # Initialize empty PDF list
-                        }
+                        # Stop if we hit another video entry
+                        if '.m3u8' in next_line:
+                            break
                         
-                        # Look ahead for associated PDFs - improved logic
-                        next_idx = i + 1
-                        while next_idx < len(lines):
-                            next_line = lines[next_idx].strip()
-                            logger.debug(f"Checking line {next_idx}: {next_line}")
+                        # Check for PDF entries - multiple patterns
+                        if (next_line.lower().startswith(('PDF', 'PDF-', 'PDF:', 'PDF ')) or 
+                            'PDF' in next_line.lower()):
                             
-                            # Check if it's a PDF line - more flexible matching
-                            if next_line.lower().startswith('pdf'):
-                                logger.info(f"Found PDF line: {next_line}")
-                                
-                                # Extract PDF title (handle different formats)
-                                pdf_title = ""
-                                if next_line.startswith('PDF -'):
-                                    pdf_title = next_line[5:].strip()
-                                elif next_line.startswith('PDF:'):
-                                    pdf_title = next_line[4:].strip()
-                                elif next_line.startswith('PDF '):
-                                    pdf_title = next_line[4:].strip()
-                                
-                                # Remove leading colons or dashes
-                                if pdf_title.startswith((':','- ')):
-                                    pdf_title = pdf_title[1:].strip()
-                                
-                                # Look for PDF URL in next line
-                                if next_idx + 1 < len(lines):
-                                    pdf_url_line = lines[next_idx + 1].strip()
-                                    logger.info(f"Checking potential PDF URL: {pdf_url_line}")
-                                    
-                                    if pdf_url_line.startswith(('http://', 'https://')) and ('.pdf' in pdf_url_line.lower() or 'pdf' in pdf_url_line.lower()):
-                                        entry['pdfs'].append({
-                                            'title': pdf_title if pdf_title else f"PDF for {title}",
-                                            'url': pdf_url_line
-                                        })
-                                        logger.info(f"✅ Associated PDF found: {pdf_title[:50]}... with video: {title[:50]}...")
-                                        next_idx += 2  # Skip PDF title and URL lines
-                                        continue
-                                    else:
-                                        # PDF title found but no URL in next line, skip this PDF
-                                        logger.warning(f"PDF title found but no valid URL: {pdf_url_line}")
-                                        next_idx += 1
-                                else:
-                                    # PDF title found but no next line
-                                    next_idx += 1
+                            # Extract PDF title
+                            pdf_title = next_line
+                            if next_line.lower().startswith('PDF'):
+                                # Remove PDF prefix variations
+                                for prefix in ['PDF-', 'PDF:', 'PDF ', 'PDF']:
+                                    if next_line.lower().startswith(prefix):
+                                        pdf_title = next_line[len(prefix):].strip()
+                                        break
                             
-                            # Check if next line is directly a PDF URL (without PDF prefix)
-                            elif next_line.startswith(('http://', 'https://')) and ('.pdf' in next_line.lower() or 'pdf' in next_line.lower()):
-                                # Check if previous line was a PDF title
-                                if next_idx > 0:
-                                    prev_line = lines[next_idx - 1].strip()
-                                    if prev_line.lower().startswith('pdf'):
-                                        # Already handled above
-                                        next_idx += 1
-                                        continue
+                            # Clean up title
+                            if pdf_title.startswith(('-', ':', ' ')):
+                                pdf_title = pdf_title[1:].strip()
+                            
+                            # Look for URL in the next line(s)
+                            pdf_url = None
+                            url_check_idx = next_idx + 1
+                            
+                            # Check next few lines for PDF URL
+                            while url_check_idx < len(lines) and url_check_idx <= next_idx + 3:
+                                potential_url = lines[url_check_idx].strip()
                                 
-                                # Standalone PDF URL - associate with current video
+                                if potential_url.startswith(('http://', 'https://')):
+                                    # Verify it's likely a PDF URL
+                                    if ('.pdf' in potential_url.lower() or 
+                                        'pdf' in potential_url.lower() or
+                                        potential_url.endswith('.pdf')):
+                                        pdf_url = potential_url
+                                        break
+                                
+                                url_check_idx += 1
+                            
+                            if pdf_url:
                                 entry['pdfs'].append({
-                                    'title': f"PDF for {title}",
-                                    'url': next_line
+                                    'title': pdf_title if pdf_title else f"PDF for {title}",
+                                    'url': pdf_url,
+                                    'order': len(entry['pdfs']) + 1  # Add explicit ordering
                                 })
-                                logger.info(f"✅ Standalone PDF URL found: {next_line[:50]}... for video: {title[:50]}...")
-                                next_idx += 1
-                            
-                            # If we hit another video, stop looking for PDFs
-                            elif '.m3u8' in next_line:
-                                logger.info(f"Found next video, stopping PDF search for current video")
-                                break
-                            else:
-                                next_idx += 1
+                                logger.info(f"✅ PDF #{len(entry['pdfs'])} found: {pdf_title[:30]}... for video: {title[:30]}...")
+                                # Skip the lines we've processed
+                                next_idx = url_check_idx + 1
+                                continue
                         
-                        entries.append(entry)
-                        logger.info(f"📹 Found video: {title[:50]}... with {len(entry['pdfs'])} associated PDFs")
-                
-                i += 1
-                
+                        # Check for standalone PDF URLs (without PDF prefix)
+                        elif (next_line.startswith(('http://', 'https://')) and 
+                              ('.pdf' in next_line.lower() or next_line.lower().endswith('.pdf'))):
+                            
+                            entry['pdfs'].append({
+                                'title': f"PDF {len(entry['pdfs']) + 1} for {title}",
+                                'url': next_line,
+                                'order': len(entry['pdfs']) + 1
+                            })
+                            logger.info(f"✅ Standalone PDF URL found for video: {title[:30]}...")
+                        
+                        next_idx += 1
+                    
+                    # Sort PDFs by order to maintain sequence
+                    entry['pdfs'].sort(key=lambda x: x.get('order', 0))
+                    
+                    entries.append(entry)
+                    logger.info(f"📹 Video processed: {title[:50]}... with {len(entry['pdfs'])} PDFs")
+                    
+                    # Update index to continue from where we left off
+                    i = next_idx - 1
+            
+            i += 1
+        
         total_videos = len(entries)
         total_pdfs = sum(len(entry['pdfs']) for entry in entries)
-        logger.info(f"📊 FINAL COUNT: Found {total_videos} videos and {total_pdfs} PDFs")
+        logger.info(f"📊 PARSING COMPLETE: {total_videos} videos, {total_pdfs} PDFs")
         
-        # Debug: Show first few entries
+        # Debug: Show detailed entry structure
         for idx, entry in enumerate(entries[:3]):
-            logger.info(f"Entry {idx}: {entry['title'][:30]}... - PDFs: {len(entry['pdfs'])}")
+            logger.info(f"Entry {idx+1}: '{entry['title'][:40]}...' - {len(entry['pdfs'])} PDFs")
             for pdf_idx, pdf in enumerate(entry['pdfs']):
-                logger.info(f"  PDF {pdf_idx}: {pdf['title'][:30]}...")
+                logger.info(f"  PDF {pdf_idx+1}: '{pdf['title'][:40]}...'")
         
         return entries
 
@@ -506,7 +508,7 @@ async def handle_m3u8(client, message):
             total = len(entries)
             status_msg = await message.reply_text(
                 f"🔍 Found {total} video entries\n"
-                "⏳ Processing in order..."
+                "⏳ Processing in sequential order..."
             )
 
             async with aiohttp.ClientSession() as session:
@@ -518,12 +520,12 @@ async def handle_m3u8(client, message):
                         
                         await safe_edit_message(
                             status_msg,
-                            f"📥 Processing {i+1}/{total}\n"
-                            f"Title: {clean_title}\n"
-                            f"PDFs to download: {len(entry['pdfs'])}"
+                            f"📥 Processing video {i+1}/{total}\n"
+                            f"Title: {clean_title[:50]}...\n"
+                            f"Associated PDFs: {len(entry['pdfs'])}"
                         )
 
-                        # Download video
+                        # Download video first
                         ts_file = f"temp_{message.from_user.id}_{int(datetime.now().timestamp())}.ts"
                         downloaded_file = await process_m3u8(url, ts_file, status_msg)
                         
@@ -546,6 +548,7 @@ async def handle_m3u8(client, message):
                                             f"📤 Uploading {output_format.upper()}: {clean_title}"
                                         )
                                     )
+                                    logger.info(f"✅ Video uploaded: {clean_title}")
                                 except Exception as e:
                                     if "FLOOD_WAIT" in str(e):
                                         await handle_flood_wait(e, status_msg)
@@ -554,7 +557,7 @@ async def handle_m3u8(client, message):
                                     if os.path.exists(result_file):
                                         os.remove(result_file)
                         
-                        # Process associated PDFs in order
+                        # Process associated PDFs in the exact order they appear
                         for pdf_idx, pdf_entry in enumerate(entry['pdfs']):
                             pdf_title = pdf_entry['title']
                             pdf_url = pdf_entry['url']
@@ -563,26 +566,29 @@ async def handle_m3u8(client, message):
                             await safe_edit_message(
                                 status_msg,
                                 f"📚 Downloading PDF {pdf_idx+1}/{len(entry['pdfs'])}\n"
-                                f"For: {clean_title}\n"
-                                f"PDF: {pdf_clean_title}"
+                                f"Video: {clean_title[:30]}...\n"
+                                f"PDF: {pdf_clean_title[:30]}..."
                             )
                             
                             pdf_path = f"temp_pdf_{message.from_user.id}_{int(datetime.now().timestamp())}_{pdf_idx}.pdf"
+                            
                             if await download_pdf(session, pdf_url, pdf_path):
                                 start_time = time.time()
                                 try:
                                     await message.reply_document(
                                         pdf_path,
-                                        caption=f"📚 {pdf_clean_title}\n📹 Related to: {clean_title}",
+                                        caption=f"📚 PDF {pdf_idx+1}: {pdf_clean_title}\n📹 Related to: {clean_title}",
                                         file_name=f"{pdf_clean_title}.pdf",
                                         progress=progress,
                                         progress_args=(
                                             status_msg,
                                             start_time,
-                                            f"📤 Uploading PDF: {pdf_clean_title}"
+                                            f"📤 Uploading PDF {pdf_idx+1}: {pdf_clean_title}"
                                         )
                                     )
+                                    logger.info(f"✅ PDF {pdf_idx+1} uploaded: {pdf_clean_title}")
                                 except Exception as e:
+                                    logger.error(f"PDF upload error: {str(e)}")
                                     if "FLOOD_WAIT" in str(e):
                                         await handle_flood_wait(e, status_msg)
                                         continue
@@ -590,19 +596,25 @@ async def handle_m3u8(client, message):
                                     if os.path.exists(pdf_path):
                                         os.remove(pdf_path)
                             else:
-                                await message.reply_text(f"❌ Failed to download PDF: {pdf_clean_title}")
+                                logger.error(f"Failed to download PDF: {pdf_url}")
+                                await message.reply_text(f"❌ Failed to download PDF {pdf_idx+1}: {pdf_clean_title}")
                         
-                        await asyncio.sleep(MIN_DELAY_BETWEEN_ENTRIES)
+                        # Small delay between entries to prevent overwhelming
+                        if i < total - 1:  # Don't delay after the last entry
+                            await asyncio.sleep(MIN_DELAY_BETWEEN_ENTRIES)
 
                     except Exception as e:
                         logger.error(f"Error processing entry {i+1}: {str(e)}")
                         await message.reply_text(f"❌ Error processing entry {i+1}: {str(e)}")
                         # Clean up any remaining files
-                        for temp_file in [ts_file]:
-                            if 'temp_file' in locals() and os.path.exists(temp_file):
+                        temp_files = [f for f in os.listdir('.') if f.startswith(f'temp_{message.from_user.id}_')]
+                        for temp_file in temp_files:
+                            try:
                                 os.remove(temp_file)
+                            except:
+                                pass
 
-            await safe_edit_message(status_msg, "✅ All files processed!")
+            await safe_edit_message(status_msg, "✅ All files processed successfully in order!")
 
         else:  # Single URL
             status_msg = await message.reply_text("⏳ Processing...")
@@ -670,7 +682,8 @@ async def handle_command(client, message):
             "PDF - [Category] Title 1\n"
             "PDF_URL 1\n\n"
             "[Category] Title 2:URL 2\n\n"
-            "📌 **Audio will be extracted as MP3**"
+            "📌 **Audio will be extracted as MP3**\n"
+            "📌 **PDFs will be downloaded in exact order they appear**"
         )
     else:
         await message.reply_text(
@@ -686,5 +699,6 @@ async def handle_command(client, message):
             "Commands:\n"
             "/m3u8 - Download as **MKV** (High Quality)\n"
             "/mp3 - Extract audio as MP3\n\n"
-            "📌 **Videos are downloaded in MKV format for best quality**"
+            "📌 **Videos are downloaded in MKV format for best quality**\n"
+            "📌 **PDFs are processed in exact sequential order**"
         )
