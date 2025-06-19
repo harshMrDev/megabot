@@ -324,6 +324,11 @@ async def parse_text_file(file_path):
             content = await file.read()
             lines = [line.strip() for line in content.split('\n') if line.strip()]
             
+            # Debug: Log first few lines to understand the format
+            logger.info(f"Total lines in file: {len(lines)}")
+            for idx, line in enumerate(lines[:10]):
+                logger.info(f"Line {idx}: {line}")
+            
             i = 0
             while i < len(lines):
                 line = lines[i]
@@ -343,49 +348,90 @@ async def parse_text_file(file_path):
                             'pdfs': []  # Initialize empty PDF list
                         }
                         
-                        # Look ahead for associated PDFs with same title
+                        # Look ahead for associated PDFs - improved logic
                         next_idx = i + 1
                         while next_idx < len(lines):
                             next_line = lines[next_idx].strip()
+                            logger.debug(f"Checking line {next_idx}: {next_line}")
                             
-                            # Check if it's a PDF line
-                            if next_line.startswith('PDF -'):
-                                pdf_title = next_line[5:].strip()
-                                if ':' in pdf_title:
-                                    pdf_title = pdf_title.split(':', 1)[1].strip()
+                            # Check if it's a PDF line - more flexible matching
+                            if next_line.lower().startswith('pdf'):
+                                logger.info(f"Found PDF line: {next_line}")
                                 
-                                # Check if PDF title matches video title (ignoring brackets and extra characters)
-                                video_title_clean = title.replace('[', '').replace(']', '').strip()
-                                pdf_title_clean = pdf_title.replace('[', '').replace(']', '').strip()
+                                # Extract PDF title (handle different formats)
+                                pdf_title = ""
+                                if next_line.startswith('PDF -'):
+                                    pdf_title = next_line[5:].strip()
+                                elif next_line.startswith('PDF:'):
+                                    pdf_title = next_line[4:].strip()
+                                elif next_line.startswith('PDF '):
+                                    pdf_title = next_line[4:].strip()
                                 
-                                if pdf_title_clean in video_title_clean or video_title_clean in pdf_title_clean:
-                                    # Look for PDF URL in next line
-                                    if next_idx + 1 < len(lines):
-                                        pdf_url_line = lines[next_idx + 1].strip()
-                                        if pdf_url_line.startswith(('http://', 'https://')) and '.pdf' in pdf_url_line:
-                                            entry['pdfs'].append({
-                                                'title': pdf_title,
-                                                'url': pdf_url_line
-                                            })
-                                            logger.info(f"Associated PDF found: {pdf_title[:50]}... with video: {title[:50]}...")
-                                            next_idx += 2  # Skip PDF title and URL lines
-                                            continue
+                                # Remove leading colons or dashes
+                                if pdf_title.startswith((':','- ')):
+                                    pdf_title = pdf_title[1:].strip()
                                 
+                                # Look for PDF URL in next line
+                                if next_idx + 1 < len(lines):
+                                    pdf_url_line = lines[next_idx + 1].strip()
+                                    logger.info(f"Checking potential PDF URL: {pdf_url_line}")
+                                    
+                                    if pdf_url_line.startswith(('http://', 'https://')) and ('.pdf' in pdf_url_line.lower() or 'pdf' in pdf_url_line.lower()):
+                                        entry['pdfs'].append({
+                                            'title': pdf_title if pdf_title else f"PDF for {title}",
+                                            'url': pdf_url_line
+                                        })
+                                        logger.info(f"✅ Associated PDF found: {pdf_title[:50]}... with video: {title[:50]}...")
+                                        next_idx += 2  # Skip PDF title and URL lines
+                                        continue
+                                    else:
+                                        # PDF title found but no URL in next line, skip this PDF
+                                        logger.warning(f"PDF title found but no valid URL: {pdf_url_line}")
+                                        next_idx += 1
+                                else:
+                                    # PDF title found but no next line
+                                    next_idx += 1
+                            
+                            # Check if next line is directly a PDF URL (without PDF prefix)
+                            elif next_line.startswith(('http://', 'https://')) and ('.pdf' in next_line.lower() or 'pdf' in next_line.lower()):
+                                # Check if previous line was a PDF title
+                                if next_idx > 0:
+                                    prev_line = lines[next_idx - 1].strip()
+                                    if prev_line.lower().startswith('pdf'):
+                                        # Already handled above
+                                        next_idx += 1
+                                        continue
+                                
+                                # Standalone PDF URL - associate with current video
+                                entry['pdfs'].append({
+                                    'title': f"PDF for {title}",
+                                    'url': next_line
+                                })
+                                logger.info(f"✅ Standalone PDF URL found: {next_line[:50]}... for video: {title[:50]}...")
                                 next_idx += 1
+                            
+                            # If we hit another video, stop looking for PDFs
+                            elif '.m3u8' in next_line:
+                                logger.info(f"Found next video, stopping PDF search for current video")
+                                break
                             else:
-                                # If we hit another video or unrelated content, stop looking for PDFs
-                                if '.m3u8' in next_line:
-                                    break
                                 next_idx += 1
                         
                         entries.append(entry)
-                        logger.info(f"Found video: {title[:50]}... with {len(entry['pdfs'])} associated PDFs")
+                        logger.info(f"📹 Found video: {title[:50]}... with {len(entry['pdfs'])} associated PDFs")
                 
                 i += 1
                 
         total_videos = len(entries)
         total_pdfs = sum(len(entry['pdfs']) for entry in entries)
-        logger.info(f"Found {total_videos} videos and {total_pdfs} PDFs")
+        logger.info(f"📊 FINAL COUNT: Found {total_videos} videos and {total_pdfs} PDFs")
+        
+        # Debug: Show first few entries
+        for idx, entry in enumerate(entries[:3]):
+            logger.info(f"Entry {idx}: {entry['title'][:30]}... - PDFs: {len(entry['pdfs'])}")
+            for pdf_idx, pdf in enumerate(entry['pdfs']):
+                logger.info(f"  PDF {pdf_idx}: {pdf['title'][:30]}...")
+        
         return entries
 
     except Exception as e:
