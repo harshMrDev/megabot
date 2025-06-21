@@ -493,7 +493,7 @@ async def parse_text_file(file_path):
         logger.error(f"Error parsing file: {str(e)}")
         return []
 
-async def convert_to_format(input_file, output_format='mkv'):
+async def convert_to_format(input_file, output_format='mp4'):
     """Convert file to specified format using FFmpeg - Default to MKV for videos"""
     try:
         output_file = input_file.rsplit('.', 1)[0] + f'.{output_format}'
@@ -508,13 +508,17 @@ async def convert_to_format(input_file, output_format='mkv'):
                 '-y',
                 output_file
             ]
-        elif output_format == 'mkv':
-            # Use MKV container with copy codecs for best quality and compatibility
+        
+        elif output_format == 'mp4':
             cmd = [
                 'ffmpeg', '-i', input_file,
-                '-c:v', 'copy',  # Copy video codec
-                '-c:a', 'copy',  # Copy audio codec
-                '-f', 'matroska',  # Specify Matroska container (MKV)
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-profile:v', 'main',
+                '-level', '4.0',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-movflags', '+faststart',
                 '-y',
                 output_file
             ]
@@ -546,7 +550,7 @@ async def handle_m3u8(client, message):
     """Handle M3U8 URLs or text files with improved PDF handling"""
     try:
         # Determine output format - default to MKV for videos, MP3 if specifically requested
-        output_format = 'mp3' if message.reply_to_message and message.reply_to_message.text and '/mp3' in message.reply_to_message.text else 'mkv'
+        output_format = 'mp3' if message.reply_to_message and message.reply_to_message.text and '/mp3' in message.reply_to_message.text else 'mp4'
         
         if message.document and message.document.mime_type == "text/plain":
             status = await message.reply_text("📄 Reading and parsing file...")
@@ -687,10 +691,11 @@ async def handle_m3u8(client, message):
                     start_time = time.time()
                     try:
                         format_emoji = "🎵" if output_format == 'mp3' else "🎥"
-                        await message.reply_document(
-                            result_file,
+                        await message.reply_video(
+                            video=send_file,
                             caption=f"{format_emoji} Video",
                             file_name=f"video.{output_format}",
+                            supports_streaming=True,
                             progress=progress,
                             progress_args=(
                                 status_msg,
