@@ -494,62 +494,85 @@ async def parse_text_file(file_path):
         return []
 
 async def convert_to_format(input_file, output_format='mp4'):
-    """Convert file to specified format using FFmpeg - Default to MKV for videos"""
+    """Optimized conversion with streaming support and faster encoding"""
     try:
         output_file = input_file.rsplit('.', 1)[0] + f'.{output_format}'
         
         if output_format == 'mp3':
+            # Fast MP3 extraction with optimal settings
             cmd = [
                 'ffmpeg', '-i', input_file,
-                '-vn',
+                '-vn',  # No video
                 '-acodec', 'libmp3lame',
-                '-ab', '192k',
+                '-ab', '128k',  # Reduced bitrate for faster encoding
                 '-ar', '44100',
+                '-ac', '2',  # Stereo
+                '-threads', '0',  # Use all available threads
                 '-y',
                 output_file
             ]
         
         elif output_format == 'mp4':
+            # Optimized MP4 for streaming with fast encoding
             cmd = [
                 'ffmpeg', '-i', input_file,
                 '-c:v', 'libx264',
-                '-preset', 'fast',
-                '-profile:v', 'main',
-                '-level', '4.0',
+                '-preset', 'ultrafast',  # Fastest encoding preset
+                '-crf', '28',  # Reasonable quality with fast encoding
+                '-profile:v', 'baseline',  # Better compatibility
+                '-level', '3.1',
                 '-c:a', 'aac',
                 '-b:a', '128k',
-                '-movflags', '+faststart',
+                '-ac', '2',
+                '-movflags', '+faststart',  # Enable streaming
+                '-threads', '0',  # Use all available threads
                 '-y',
                 output_file
             ]
         else:
+            # Copy streams for other formats (fastest)
             cmd = [
                 'ffmpeg', '-i', input_file,
                 '-c', 'copy',
+                '-movflags', '+faststart',  # Enable streaming if container supports it
+                '-threads', '0',
                 '-y',
                 output_file
             ]
         
+        logger.info(f"Starting conversion with command: {' '.join(cmd)}")
+        
+        # Run FFmpeg with optimized settings
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        await process.communicate()
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            logger.error(f"FFmpeg error: {stderr.decode()}")
+            return None
         
         if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-            os.remove(input_file)
+            # Remove original file to save space
+            if os.path.exists(input_file):
+                os.remove(input_file)
             return output_file
-        return None
+        else:
+            logger.error("Conversion failed - output file not created or empty")
+            return None
+            
     except Exception as e:
         logger.error(f"Conversion error: {str(e)}")
         return None
 
 @Client.on_message((filters.regex(r'https?://[^\s<>"]+?\.m3u8(?:\?[^\s<>"]*)?') | filters.document) & filters.private)
 async def handle_m3u8(client, message):
-    """Handle M3U8 URLs or text files with improved PDF handling"""
+    """Handle M3U8 URLs or text files with streaming support"""
     try:
-        # Determine output format - default to MKV for videos, MP3 if specifically requested
+        # Determine output format - default to MP4 for videos, MP3 if specifically requested
         output_format = 'mp3' if message.reply_to_message and message.reply_to_message.text and '/mp3' in message.reply_to_message.text else 'mp4'
         
         if message.document and message.document.mime_type == "text/plain":
@@ -596,17 +619,34 @@ async def handle_m3u8(client, message):
                                 start_time = time.time()
                                 try:
                                     format_emoji = "🎵" if output_format == 'mp3' else "🎥"
-                                    await message.reply_document(
-                                        result_file,
-                                        caption=f"{format_emoji} {clean_title}",
-                                        file_name=f"{clean_title}.{output_format}",
-                                        progress=progress,
-                                        progress_args=(
-                                            status_msg,
-                                            start_time,
-                                            f"📤 Uploading {output_format.upper()}: {clean_title}"
+                                    
+                                    # Use reply_video for MP4 files to enable streaming
+                                    if output_format == 'mp4':
+                                        await message.reply_video(
+                                            video=result_file,
+                                            caption=f"{format_emoji} {clean_title}",
+                                            file_name=f"{clean_title}.{output_format}",
+                                            supports_streaming=True,  # Enable streaming
+                                            progress=progress,
+                                            progress_args=(
+                                                status_msg,
+                                                start_time,
+                                                f"📤 Uploading {output_format.upper()}: {clean_title}"
+                                            )
                                         )
-                                    )
+                                    else:
+                                        # Use reply_document for MP3 and other formats
+                                        await message.reply_document(
+                                            result_file,
+                                            caption=f"{format_emoji} {clean_title}",
+                                            file_name=f"{clean_title}.{output_format}",
+                                            progress=progress,
+                                            progress_args=(
+                                                status_msg,
+                                                start_time,
+                                                f"📤 Uploading {output_format.upper()}: {clean_title}"
+                                            )
+                                        )
                                     logger.info(f"✅ Successfully uploaded video: {clean_title}")
                                 except Exception as e:
                                     logger.error(f"Error uploading video: {str(e)}")
@@ -661,8 +701,7 @@ async def handle_m3u8(client, message):
                                     await message.reply_text(f"❌ PDF download failed (empty file): {pdf_clean_title}")
                             else:
                                 logger.error(f"Failed to download PDF: {pdf_url}")
-                                await message.reply_text(f"❌ Failed to download PDF: {pdf_clean_title}")
-                        
+                                await message.reply_text(f"❌ Failed to download PDF: {pdf_clean_title}"
                         # Delay between entries
                         if i < len(entries) - 1:  # Don't delay after last entry
                             await asyncio.sleep(MIN_DELAY_BETWEEN_ENTRIES)
