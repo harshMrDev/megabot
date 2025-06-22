@@ -492,11 +492,10 @@ async def parse_text_file(file_path):
     except Exception as e:
         logger.error(f"Error parsing file: {str(e)}")
         return []
-
-async def convert_to_format(input_file, output_format='mp4'):
-    """Optimized conversion with streaming support and faster encoding"""
-    try:
-        output_file = input_file.rsplit('.', 1)[0] + f'.{output_format}'
+async def convert_to_format_fast(input_file, output_format, enable_streaming=True):
+    """Fast conversion with streaming optimization"""
+    timestamp = int(time.time())
+    output_file = f"converted_{timestamp}.{output_format}"
         
         if output_format == 'mp3':
             # Fast MP3 extraction with optimal settings
@@ -702,76 +701,118 @@ async def handle_m3u8(client, message):
                             else:
                                 logger.error(f"Failed to download PDF: {pdf_url}")
                                 await message.reply_text(f"❌ Failed to download PDF: {pdf_clean_title}"
-                        # Delay between entries
-                        if i < len(entries) - 1:  # Don't delay after last entry
-                            await asyncio.sleep(MIN_DELAY_BETWEEN_ENTRIES)
+                # Delay between entries
+                    if i < len(entries) - 1:  # Don't delay after last entry
+                        await asyncio.sleep(MIN_DELAY_BETWEEN_ENTRIES)
 
-                    except Exception as e:
-                        logger.error(f"Error processing entry {i+1}: {str(e)}")
-                        await message.reply_text(f"❌ Error processing entry {i+1}: {str(e)}")
-                        # Clean up any remaining files
-                        for temp_file in [ts_file]:
-                            if 'temp_file' in locals() and os.path.exists(temp_file):
-                                os.remove(temp_file)
+                except Exception as e:
+                    logger.error(f"Error processing entry {i+1}: {str(e)}")
+                    await message.reply_text(f"❌ Error processing entry {i+1}: {str(e)}")
+                    # Clean up any remaining files
+                    for temp_file in [ts_file]:
+                        if 'temp_file' in locals() and os.path.exists(temp_file):
+                            os.remove(temp_file)
 
-            await safe_edit_message(status_msg, f"✅ Processing complete!\n📹 {total_videos} videos\n📚 {total_pdfs} PDFs")
+        await safe_edit_message(status_msg, f"✅ Processing complete!\n📹 {total_videos} videos\n📚 {total_pdfs} PDFs")
 
-        else:  # Single URL
-            status_msg = await message.reply_text("⏳ Processing single URL...")
-            ts_file = f"video_{message.from_user.id}_{int(datetime.now().timestamp())}.ts"
+    else:  # Single URL
+        status_msg = await message.reply_text("⏳ Processing single URL...")
+        timestamp = int(datetime.now().timestamp())
+        ts_file = f"video_{message.from_user.id}_{timestamp}.ts"
+        
+        downloaded_file = await process_m3u8(message.text, ts_file, status_msg)
+        
+        if downloaded_file and os.path.exists(downloaded_file):
+            await safe_edit_message(status_msg, f"🔄 Converting to {output_format.upper()}...")
             
-            downloaded_file = await process_m3u8(message.text, ts_file, status_msg)
+            # Fast conversion with streaming optimization
+            result_file = await convert_to_format_fast(downloaded_file, output_format, enable_streaming=True)
             
-            if downloaded_file and os.path.exists(downloaded_file):
-                await safe_edit_message(status_msg, f"🔄 Converting to {output_format.upper()}...")
-                result_file = await convert_to_format(downloaded_file, output_format)
+            if result_file and os.path.exists(result_file):
+                start_time = time.time()
+                file_size = os.path.getsize(result_file)
                 
-                if result_file and os.path.exists(result_file):
-                    start_time = time.time()
-                    try:
-                        format_emoji = "🎵" if output_format == 'mp3' else "🎥"
-                        await message.reply_video(
-                            video=send_file,
-                            caption=f"{format_emoji} Video",
-                            file_name=f"video.{output_format}",
-                            supports_streaming=True,
-                            progress=progress,
-                            progress_args=(
-                                status_msg,
-                                start_time,
-                                f"📤 Uploading {output_format.upper()}..."
-                            )
-                        )
-                    except Exception as e:
-                        if "FLOOD_WAIT" in str(e):
-                            await handle_flood_wait(e, status_msg)
-                            await message.reply_document(
-                                result_file,
-                                caption=f"{format_emoji} Video",
-                                file_name=f"video.{output_format}",
+                try:
+                    format_emoji = "🎵" if output_format == 'mp3' else "🎥"
+                    
+                    # Choose upload method based on file size and format
+                    if output_format in ['mp4', 'mkv'] and file_size < 3000 * 1024 * 1024:  # Less than 50MB
+                        # Use video upload for better streaming support
+                        with open(result_file, 'rb') as video_file:
+                            await message.reply_video(
+                                video=video_file,
+                                caption=f"{format_emoji} Video - Streaming Optimized",
+                                file_name=f"video_{timestamp}.{output_format}",
+                                supports_streaming=True,
+                                width=1920,  # Set appropriate width
+                                height=1080,  # Set appropriate height
+                                duration=0,  # Let Telegram detect duration
                                 progress=progress,
                                 progress_args=(
                                     status_msg,
-                                    time.time(),
+                                    start_time,
                                     f"📤 Uploading {output_format.upper()}..."
                                 )
                             )
-                    finally:
-                        if os.path.exists(result_file):
-                            os.remove(result_file)
-                else:
-                    await message.reply_text("❌ Conversion failed")
+                    else:
+                        # Use document upload for larger files or audio
+                        with open(result_file, 'rb') as doc_file:
+                            await message.reply_document(
+                                document=doc_file,
+                                caption=f"{format_emoji} {'Audio' if output_format == 'mp3' else 'Video'}",
+                                file_name=f"{'audio' if output_format == 'mp3' else 'video'}_{timestamp}.{output_format}",
+                                progress=progress,
+                                progress_args=(
+                                    status_msg,
+                                    start_time,
+                                    f"📤 Uploading {output_format.upper()}..."
+                                )
+                            )
+                            
+                except Exception as e:
+                    logger.error(f"Upload error: {str(e)}")
+                    if "FLOOD_WAIT" in str(e):
+                        await handle_flood_wait(e, status_msg)
+                        # Retry with document upload after flood wait
+                        try:
+                            with open(result_file, 'rb') as retry_file:
+                                await message.reply_document(
+                                    document=retry_file,
+                                    caption=f"{format_emoji} {'Audio' if output_format == 'mp3' else 'Video'} - Retry",
+                                    file_name=f"{'audio' if output_format == 'mp3' else 'video'}_{timestamp}.{output_format}",
+                                    progress=progress,
+                                    progress_args=(
+                                        status_msg,
+                                        time.time(),
+                                        f"📤 Retrying upload {output_format.upper()}..."
+                                    )
+                                )
+                        except Exception as retry_error:
+                            logger.error(f"Retry upload failed: {str(retry_error)}")
+                            await message.reply_text("❌ Upload failed after retry")
+                    else:
+                        await message.reply_text(f"❌ Upload error: {str(e)}")
+                finally:
+                    # Clean up files
+                    for file_path in [result_file, downloaded_file]:
+                        if os.path.exists(file_path):
+                            try:
+                                os.remove(file_path)
+                            except Exception as cleanup_error:
+                                logger.error(f"Cleanup error: {str(cleanup_error)}")
             else:
-                await message.reply_text("❌ Download failed")
+                await message.reply_text("❌ Conversion failed")
+        else:
+            await message.reply_text("❌ Download failed")
 
-    except Exception as e:
-        logger.error(f"Handler error: {str(e)}")
-        await message.reply_text(f"❌ Error: {str(e)}")
-
-@Client.on_message(filters.command(["m3u8", "mp3"]))
+except Exception as e:
+    logger.error(f"Handler error: {str(e)}")
+    await message.reply_text(f"❌ Error: {str(e)}")
+@Client.on_message(filters.command(["m3u8", "mp3", "mp4"]))
 async def handle_command(client, message):
-    """Handle /m3u8 and /mp3 commands"""
+    """Handle /m3u8, /mp3, and /mp4 commands"""
     command = message.text.split()[0][1:]
+    
     if command == "mp3":
         await message.reply_text(
             "🎵 **M3U8 Audio Extractor**\n\n"
@@ -783,10 +824,26 @@ async def handle_command(client, message):
             "PDF - [Category] Title 1\n"
             "PDF_URL 1\n\n"
             "[Category] Title 2:URL 2\n\n"
-            "📌 **Audio will be extracted as MP3**\n"
-            "📌 **PDFs will be downloaded in exact order they appear**"
+            "📌 **Audio extracted as high-quality MP3**\n"
+            "📌 **Fast processing with optimized encoding**\n"
+            "📌 **PDFs downloaded in sequential order**"
         )
-    else:
+    elif command == "mp4":
+        await message.reply_text(
+            "🎥 **M3U8 MP4 Downloader**\n\n"
+            "Send me:\n"
+            "• Direct M3U8 URL or\n"
+            "• Text file with titles and URLs\n\n"
+            "Format for text file:\n"
+            "[Category] Title 1:URL 1\n"
+            "PDF - [Category] Title 1\n"
+            "PDF_URL 1\n\n"
+            "[Category] Title 2:URL 2\n\n"
+            "📌 **Videos converted to streaming-optimized MP4**\n"
+            "📌 **Fast conversion with H.264 encoding**\n"
+            "📌 **Supports streaming playback**"
+        )
+    else:  # m3u8 command
         await message.reply_text(
             "📥 **M3U8 Video Downloader**\n\n"
             "Send me:\n"
@@ -799,7 +856,9 @@ async def handle_command(client, message):
             "[Category] Title 2:URL 2\n\n"
             "Commands:\n"
             "/m3u8 - Download as **MKV** (High Quality)\n"
-            "/mp3 - Extract audio as MP3\n\n"
-            "📌 **Videos are downloaded in MKV format for best quality**\n"
-            "📌 **PDFs are processed in exact sequential order**"
+            "/mp4 - Convert to **MP4** (Streaming Optimized)\n"
+            "/mp3 - Extract audio as **MP3**\n\n"
+            "📌 **Fast processing with optimized encoding**\n"
+            "📌 **Streaming support for video formats**\n"
+            "📌 **PDFs processed in sequential order**"
         )
