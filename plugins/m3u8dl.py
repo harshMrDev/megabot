@@ -43,15 +43,15 @@ async def safe_edit_message(message, text, sleep_on_flood=True):
     try:
         now = time.time()
         message_id = f"{message.chat.id}:{message.id}"
-        
+
         if message_id in last_message_update:
             time_since_last = now - last_message_update[message_id]
             if time_since_last < MIN_DELAY_BETWEEN_UPDATES:
                 await asyncio.sleep(MIN_DELAY_BETWEEN_UPDATES - time_since_last)
-        
+
         await message.edit_text(text)
         last_message_update[message_id] = now
-        
+
     except Exception as e:
         if "FLOOD_WAIT" in str(e):
             if sleep_on_flood:
@@ -66,18 +66,18 @@ def clean_filename(title):
     """Clean filename from invalid characters while preserving category"""
     if not title:
         return datetime.now().strftime("Video_%Y%m%d_%H%M%S")
-    
+
     # Keep category in brackets
     bracket_end = title.find(']')
     if bracket_end != -1:
         category = title[:bracket_end+1]
         rest = title[bracket_end+1:].strip()
-        
+
         # Clean the rest of the title
         invalid_chars = '<>:"/\\|?*'
         for char in invalid_chars:
             rest = rest.replace(char, '_')
-        
+
         # Combine with length limit
         if len(category) + len(rest) > 200:
             available_space = 197 - len(category)  # 197 to account for " - "
@@ -93,7 +93,7 @@ def clean_filename(title):
         for char in invalid_chars:
             title = title.replace(char, '_')
         title = title[:200]
-    
+
     return title.strip('. ')
 
 def create_progress_bar(current, total, bar_length=20):
@@ -131,7 +131,7 @@ async def handle_flood_wait(e, message, retry_action=None):
         if "FLOOD_WAIT" in str(e):
             wait_time = int(str(e).split('wait of ')[1].split(' seconds')[0])
             logger.info(f"FloodWait detected: waiting for {wait_time} seconds")
-            
+
             try:
                 await safe_edit_message(
                     message,
@@ -141,9 +141,9 @@ async def handle_flood_wait(e, message, retry_action=None):
                 )
             except Exception:
                 pass
-            
+
             await asyncio.sleep(wait_time + 5)
-            
+
             if retry_action:
                 try:
                     await retry_action()
@@ -151,7 +151,7 @@ async def handle_flood_wait(e, message, retry_action=None):
                 except Exception as retry_error:
                     logger.error(f"Retry action failed: {str(retry_error)}")
                     return False
-            
+
             return True
         return False
     except Exception as e:
@@ -163,25 +163,25 @@ async def progress(current, total, message, start, text):
     try:
         now = time.time()
         message_id = f"{message.chat.id}:{message.id}"
-        
+
         if message_id not in last_progress_update:
             last_progress_update[message_id] = 0
-        
+
         if now - last_progress_update[message_id] < MIN_DELAY_BETWEEN_UPDATES:
             return
-        
+
         if total is None:
             total = current
-        
+
         if current <= 0 or total <= 0:
             return
-        
+
         diff = now - start
         speed = current / diff if diff > 0 else 0
         eta = (total - current) / speed if speed > 0 else 0
-        
+
         progress_bar = create_progress_bar(current, total)
-        
+
         try:
             await safe_edit_message(
                 message,
@@ -222,7 +222,7 @@ async def process_m3u8(url, output_file, status_msg):
     try:
         connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_DOWNLOADS)
         timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_connect=10, sock_read=10)
-        
+
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             # Fetch playlist
             async with session.get(url, headers=HEADERS) as response:
@@ -231,7 +231,7 @@ async def process_m3u8(url, output_file, status_msg):
                 content = await response.text()
 
             playlist = m3u8.loads(content)
-            
+
             # Handle master playlist
             if playlist.playlists:
                 variant = max(playlist.playlists, key=lambda p: p.stream_info.bandwidth if p.stream_info else 0)
@@ -246,7 +246,7 @@ async def process_m3u8(url, output_file, status_msg):
 
             total_segments = len(playlist.segments)
             base_url = url.rsplit('/', 1)[0] + '/'
-            
+
             await safe_edit_message(
                 status_msg,
                 f"📥 Found {total_segments} segments\n"
@@ -263,7 +263,7 @@ async def process_m3u8(url, output_file, status_msg):
             for idx, segment in enumerate(playlist.segments, 1):
                 segment_url = urljoin(base_url, segment.uri)
                 success = await download_segment(session, segment_url, output_file)
-                
+
                 if not success:
                     logger.error(f"Failed to download segment {idx}")
                     continue
@@ -274,7 +274,7 @@ async def process_m3u8(url, output_file, status_msg):
                     progress_bar = create_progress_bar(idx, total_segments)
                     speed = idx / (now - start_time) if now > start_time else 0
                     eta = (total_segments - idx) / speed if speed > 0 else 0
-                    
+
                     try:
                         await safe_edit_message(
                             status_msg,
@@ -340,14 +340,14 @@ def is_video_url(url):
 async def parse_text_file(file_path):
     """Improved text file parser with better PDF recognition"""
     entries = []
-    
+
     try:
         async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
             content = await file.read()
             lines = [line.strip() for line in content.split('\n') if line.strip()]
-            
+
         logger.info(f"📄 Total lines in file: {len(lines)}")
-        
+
         # First pass: identify all URLs and their types
         url_info = []
         for idx, line in enumerate(lines):
@@ -360,7 +360,7 @@ async def parse_text_file(file_path):
                     title_part = line[:url_match.start()].strip()
                     # Clean up title (remove common separators)
                     title_part = re.sub(r'[:\-\|]+$', '', title_part).strip()
-                    
+
                     url_info.append({
                         'line_idx': idx,
                         'line': line,
@@ -369,26 +369,26 @@ async def parse_text_file(file_path):
                         'is_video': is_video_url(url),
                         'is_pdf': is_pdf_url(url)
                     })
-        
+
         logger.info(f"📊 Found {len(url_info)} URLs")
-        
+
         # Second pass: group content by video entries
         current_video = None
-        
+
         for i, line in enumerate(lines):
             line_lower = line.lower()
-            
+
             # Check if this line contains a video URL
             video_url_info = None
             for url_info_item in url_info:
                 if url_info_item['line_idx'] == i and url_info_item['is_video']:
                     video_url_info = url_info_item
                     break
-            
+
             if video_url_info:
                 # Found a video URL - create new entry
                 title = video_url_info['title_part']
-                
+
                 # If no title in URL line, look for title in previous lines
                 if not title:
                     # Look back up to 3 lines for a title
@@ -399,10 +399,10 @@ async def parse_text_file(file_path):
                             if not prev_line.lower().startswith(('pdf', 'note', 'link')):
                                 title = prev_line
                                 break
-                
+
                 if not title:
                     title = f"Video_{len(entries)+1}"
-                
+
                 current_video = {
                     'type': 'video',
                     'title': title,
@@ -412,18 +412,18 @@ async def parse_text_file(file_path):
                 entries.append(current_video)
                 logger.info(f"🎥 Found video: {title[:50]}...")
                 continue
-            
+
             # Check if this line contains a PDF URL
             pdf_url_info = None
             for url_info_item in url_info:
                 if url_info_item['line_idx'] == i and url_info_item['is_pdf']:
                     pdf_url_info = url_info_item
                     break
-            
+
             if pdf_url_info and current_video:
                 # Found a PDF URL - associate with current video
                 pdf_title = pdf_url_info['title_part']
-                
+
                 # If no title in URL line, look for title in previous lines or use default
                 if not pdf_title:
                     # Look back up to 2 lines for a PDF title
@@ -437,26 +437,26 @@ async def parse_text_file(file_path):
                                 len(prev_line) > 10):  # Reasonable title length
                                 pdf_title = prev_line
                                 break
-                
+
                 if not pdf_title:
                     pdf_title = f"PDF for {current_video['title']}"
-                
+
                 # Clean PDF title
                 pdf_title = re.sub(r'^pdf[\s\-:]*', '', pdf_title, flags=re.IGNORECASE).strip()
-                
+
                 current_video['pdfs'].append({
                     'title': pdf_title,
                     'url': pdf_url_info['url']
                 })
                 logger.info(f"📚 Associated PDF: {pdf_title[:50]}... with video: {current_video['title'][:30]}...")
                 continue
-            
+
             # Check for standalone PDF indicators (lines that mention PDF but don't have URLs)
             if (current_video and 
                 ('pdf' in line_lower or 'document' in line_lower) and 
                 'http' not in line and
                 len(line) > 5):  # Reasonable length for a title
-                
+
                 # This might be a PDF title, check next few lines for URL
                 for j in range(i+1, min(len(lines), i+3)):
                     next_line = lines[j].strip()
@@ -473,30 +473,31 @@ async def parse_text_file(file_path):
                                 logger.info(f"📚 Found PDF title-URL pair: {pdf_title[:50]}...")
                                 break
                         break
-        
+
         # Summary
         total_videos = len(entries)
         total_pdfs = sum(len(entry['pdfs']) for entry in entries)
         logger.info(f"📊 FINAL PARSING RESULT:")
         logger.info(f"   📹 Videos found: {total_videos}")
         logger.info(f"   📚 PDFs found: {total_pdfs}")
-        
+
         # Debug output for first few entries
         for idx, entry in enumerate(entries[:3]):
             logger.info(f"   Entry {idx+1}: {entry['title'][:40]}... ({len(entry['pdfs'])} PDFs)")
             for p_idx, pdf in enumerate(entry['pdfs']):
                 logger.info(f"      PDF {p_idx+1}: {pdf['title'][:40]}...")
-        
+
         return entries
 
     except Exception as e:
         logger.error(f"Error parsing file: {str(e)}")
         return []
+
 async def convert_to_format_fast(input_file, output_format, enable_streaming=True):
     """Fast conversion with streaming optimization"""
     timestamp = int(time.time())
     output_file = f"converted_{timestamp}.{output_format}"
-        
+    try:
         if output_format == 'mp3':
             # Fast MP3 extraction with optimal settings
             cmd = [
@@ -510,7 +511,6 @@ async def convert_to_format_fast(input_file, output_format, enable_streaming=Tru
                 '-y',
                 output_file
             ]
-        
         elif output_format == 'mp4':
             # Optimized MP4 for streaming with fast encoding
             cmd = [
@@ -538,22 +538,17 @@ async def convert_to_format_fast(input_file, output_format, enable_streaming=Tru
                 '-y',
                 output_file
             ]
-        
         logger.info(f"Starting conversion with command: {' '.join(cmd)}")
-        
         # Run FFmpeg with optimized settings
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        
         stdout, stderr = await process.communicate()
-        
         if process.returncode != 0:
             logger.error(f"FFmpeg error: {stderr.decode()}")
             return None
-        
         if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
             # Remove original file to save space
             if os.path.exists(input_file):
@@ -562,7 +557,6 @@ async def convert_to_format_fast(input_file, output_format, enable_streaming=Tru
         else:
             logger.error("Conversion failed - output file not created or empty")
             return None
-            
     except Exception as e:
         logger.error(f"Conversion error: {str(e)}")
         return None
@@ -573,20 +567,20 @@ async def handle_m3u8(client, message):
     try:
         # Determine output format - default to MP4 for videos, MP3 if specifically requested
         output_format = 'mp3' if message.reply_to_message and message.reply_to_message.text and '/mp3' in message.reply_to_message.text else 'mp4'
-        
+
         if message.document and message.document.mime_type == "text/plain":
             status = await message.reply_text("📄 Reading and parsing file...")
             file = await message.download()
             entries = await parse_text_file(file)
             os.remove(file)
-            
+
             if not entries:
                 await message.reply_text("❌ No valid video entries found in file.")
                 return
 
             total_videos = len(entries)
             total_pdfs = sum(len(entry['pdfs']) for entry in entries)
-            
+
             status_msg = await message.reply_text(
                 f"🔍 Found {total_videos} videos and {total_pdfs} PDFs\n"
                 "⏳ Starting downloads in order..."
@@ -598,7 +592,7 @@ async def handle_m3u8(client, message):
                         title = entry['title']
                         url = entry['url']
                         clean_title = clean_filename(title)
-                        
+
                         await safe_edit_message(
                             status_msg,
                             f"📥 Processing {i+1}/{total_videos}\n"
@@ -609,16 +603,19 @@ async def handle_m3u8(client, message):
                         # Download video
                         ts_file = f"temp_{message.from_user.id}_{int(datetime.now().timestamp())}.ts"
                         downloaded_file = await process_m3u8(url, ts_file, status_msg)
-                        
+
                         if downloaded_file and os.path.exists(downloaded_file):
                             await safe_edit_message(status_msg, f"🔄 Converting to {output_format.upper()}: {clean_title}")
-                            result_file = await convert_to_format(downloaded_file, output_format)
-                            
+                            # You may want to use convert_to_format_fast here:
+                            # result_file = await convert_to_format_fast(downloaded_file, output_format)
+                            # If you have an old convert_to_format, keep as is:
+                            result_file = await convert_to_format_fast(downloaded_file, output_format)
+
                             if result_file and os.path.exists(result_file):
                                 start_time = time.time()
                                 try:
                                     format_emoji = "🎵" if output_format == 'mp3' else "🎥"
-                                    
+
                                     # Use reply_video for MP4 files to enable streaming
                                     if output_format == 'mp4':
                                         await message.reply_video(
@@ -655,22 +652,22 @@ async def handle_m3u8(client, message):
                                 finally:
                                     if os.path.exists(result_file):
                                         os.remove(result_file)
-                        
+
                         # Process associated PDFs
                         for pdf_idx, pdf_entry in enumerate(entry['pdfs']):
                             pdf_title = pdf_entry['title']
                             pdf_url = pdf_entry['url']
                             pdf_clean_title = clean_filename(pdf_title)
-                            
+
                             await safe_edit_message(
                                 status_msg,
                                 f"📚 Downloading PDF {pdf_idx+1}/{len(entry['pdfs'])}\n"
                                 f"Video: {clean_title}\n"
                                 f"PDF: {pdf_clean_title}"
                             )
-                            
+
                             pdf_path = f"temp_pdf_{message.from_user.id}_{int(datetime.now().timestamp())}_{pdf_idx}.pdf"
-                            
+
                             if await download_pdf(session, pdf_url, pdf_path):
                                 if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
                                     start_time = time.time()
@@ -700,119 +697,120 @@ async def handle_m3u8(client, message):
                                     await message.reply_text(f"❌ PDF download failed (empty file): {pdf_clean_title}")
                             else:
                                 logger.error(f"Failed to download PDF: {pdf_url}")
-                                await message.reply_text(f"❌ Failed to download PDF: {pdf_clean_title}"
-                # Delay between entries
+                                await message.reply_text(f"❌ Failed to download PDF: {pdf_clean_title}")
+                    # Delay between entries
                     if i < len(entries) - 1:  # Don't delay after last entry
                         await asyncio.sleep(MIN_DELAY_BETWEEN_ENTRIES)
 
-                except Exception as e:
-                    logger.error(f"Error processing entry {i+1}: {str(e)}")
-                    await message.reply_text(f"❌ Error processing entry {i+1}: {str(e)}")
-                    # Clean up any remaining files
-                    for temp_file in [ts_file]:
-                        if 'temp_file' in locals() and os.path.exists(temp_file):
-                            os.remove(temp_file)
+                    except Exception as e:
+                        logger.error(f"Error processing entry {i+1}: {str(e)}")
+                        await message.reply_text(f"❌ Error processing entry {i+1}: {str(e)}")
+                        # Clean up any remaining files
+                        for temp_file in [ts_file]:
+                            if 'temp_file' in locals() and os.path.exists(temp_file):
+                                os.remove(temp_file)
 
-        await safe_edit_message(status_msg, f"✅ Processing complete!\n📹 {total_videos} videos\n📚 {total_pdfs} PDFs")
+            await safe_edit_message(status_msg, f"✅ Processing complete!\n📹 {total_videos} videos\n📚 {total_pdfs} PDFs")
 
-    else:  # Single URL
-        status_msg = await message.reply_text("⏳ Processing single URL...")
-        timestamp = int(datetime.now().timestamp())
-        ts_file = f"video_{message.from_user.id}_{timestamp}.ts"
-        
-        downloaded_file = await process_m3u8(message.text, ts_file, status_msg)
-        
-        if downloaded_file and os.path.exists(downloaded_file):
-            await safe_edit_message(status_msg, f"🔄 Converting to {output_format.upper()}...")
-            
-            # Fast conversion with streaming optimization
-            result_file = await convert_to_format_fast(downloaded_file, output_format, enable_streaming=True)
-            
-            if result_file and os.path.exists(result_file):
-                start_time = time.time()
-                file_size = os.path.getsize(result_file)
-                
-                try:
-                    format_emoji = "🎵" if output_format == 'mp3' else "🎥"
-                    
-                    # Choose upload method based on file size and format
-                    if output_format in ['mp4', 'mkv'] and file_size < 3000 * 1024 * 1024:  # Less than 50MB
-                        # Use video upload for better streaming support
-                        with open(result_file, 'rb') as video_file:
-                            await message.reply_video(
-                                video=video_file,
-                                caption=f"{format_emoji} Video - Streaming Optimized",
-                                file_name=f"video_{timestamp}.{output_format}",
-                                supports_streaming=True,
-                                width=1920,  # Set appropriate width
-                                height=1080,  # Set appropriate height
-                                duration=0,  # Let Telegram detect duration
-                                progress=progress,
-                                progress_args=(
-                                    status_msg,
-                                    start_time,
-                                    f"📤 Uploading {output_format.upper()}..."
+        else:  # Single URL
+            status_msg = await message.reply_text("⏳ Processing single URL...")
+            timestamp = int(datetime.now().timestamp())
+            ts_file = f"video_{message.from_user.id}_{timestamp}.ts"
+
+            downloaded_file = await process_m3u8(message.text, ts_file, status_msg)
+
+            if downloaded_file and os.path.exists(downloaded_file):
+                await safe_edit_message(status_msg, f"🔄 Converting to {output_format.upper()}...")
+
+                # Fast conversion with streaming optimization
+                result_file = await convert_to_format_fast(downloaded_file, output_format, enable_streaming=True)
+
+                if result_file and os.path.exists(result_file):
+                    start_time = time.time()
+                    file_size = os.path.getsize(result_file)
+
+                    try:
+                        format_emoji = "🎵" if output_format == 'mp3' else "🎥"
+
+                        # Choose upload method based on file size and format
+                        if output_format in ['mp4', 'mkv'] and file_size < 3000 * 1024 * 1024:  # Less than 50MB
+                            # Use video upload for better streaming support
+                            with open(result_file, 'rb') as video_file:
+                                await message.reply_video(
+                                    video=video_file,
+                                    caption=f"{format_emoji} Video - Streaming Optimized",
+                                    file_name=f"video_{timestamp}.{output_format}",
+                                    supports_streaming=True,
+                                    width=1920,  # Set appropriate width
+                                    height=1080,  # Set appropriate height
+                                    duration=0,  # Let Telegram detect duration
+                                    progress=progress,
+                                    progress_args=(
+                                        status_msg,
+                                        start_time,
+                                        f"📤 Uploading {output_format.upper()}..."
+                                    )
                                 )
-                            )
-                    else:
-                        # Use document upload for larger files or audio
-                        with open(result_file, 'rb') as doc_file:
-                            await message.reply_document(
-                                document=doc_file,
-                                caption=f"{format_emoji} {'Audio' if output_format == 'mp3' else 'Video'}",
-                                file_name=f"{'audio' if output_format == 'mp3' else 'video'}_{timestamp}.{output_format}",
-                                progress=progress,
-                                progress_args=(
-                                    status_msg,
-                                    start_time,
-                                    f"📤 Uploading {output_format.upper()}..."
-                                )
-                            )
-                            
-                except Exception as e:
-                    logger.error(f"Upload error: {str(e)}")
-                    if "FLOOD_WAIT" in str(e):
-                        await handle_flood_wait(e, status_msg)
-                        # Retry with document upload after flood wait
-                        try:
-                            with open(result_file, 'rb') as retry_file:
+                        else:
+                            # Use document upload for larger files or audio
+                            with open(result_file, 'rb') as doc_file:
                                 await message.reply_document(
-                                    document=retry_file,
-                                    caption=f"{format_emoji} {'Audio' if output_format == 'mp3' else 'Video'} - Retry",
+                                    document=doc_file,
+                                    caption=f"{format_emoji} {'Audio' if output_format == 'mp3' else 'Video'}",
                                     file_name=f"{'audio' if output_format == 'mp3' else 'video'}_{timestamp}.{output_format}",
                                     progress=progress,
                                     progress_args=(
                                         status_msg,
-                                        time.time(),
-                                        f"📤 Retrying upload {output_format.upper()}..."
+                                        start_time,
+                                        f"📤 Uploading {output_format.upper()}..."
                                     )
                                 )
-                        except Exception as retry_error:
-                            logger.error(f"Retry upload failed: {str(retry_error)}")
-                            await message.reply_text("❌ Upload failed after retry")
-                    else:
-                        await message.reply_text(f"❌ Upload error: {str(e)}")
-                finally:
-                    # Clean up files
-                    for file_path in [result_file, downloaded_file]:
-                        if os.path.exists(file_path):
-                            try:
-                                os.remove(file_path)
-                            except Exception as cleanup_error:
-                                logger.error(f"Cleanup error: {str(cleanup_error)}")
-            else:
-                await message.reply_text("❌ Conversion failed")
-        else:
-            await message.reply_text("❌ Download failed")
 
-except Exception as e:
-    logger.error(f"Handler error: {str(e)}")
-    await message.reply_text(f"❌ Error: {str(e)}")
+                    except Exception as e:
+                        logger.error(f"Upload error: {str(e)}")
+                        if "FLOOD_WAIT" in str(e):
+                            await handle_flood_wait(e, status_msg)
+                            # Retry with document upload after flood wait
+                            try:
+                                with open(result_file, 'rb') as retry_file:
+                                    await message.reply_document(
+                                        document=retry_file,
+                                        caption=f"{format_emoji} {'Audio' if output_format == 'mp3' else 'Video'} - Retry",
+                                        file_name=f"{'audio' if output_format == 'mp3' else 'video'}_{timestamp}.{output_format}",
+                                        progress=progress,
+                                        progress_args=(
+                                            status_msg,
+                                            time.time(),
+                                            f"📤 Retrying upload {output_format.upper()}..."
+                                        )
+                                    )
+                            except Exception as retry_error:
+                                logger.error(f"Retry upload failed: {str(retry_error)}")
+                                await message.reply_text("❌ Upload failed after retry")
+                        else:
+                            await message.reply_text(f"❌ Upload error: {str(e)}")
+                    finally:
+                        # Clean up files
+                        for file_path in [result_file, downloaded_file]:
+                            if os.path.exists(file_path):
+                                try:
+                                    os.remove(file_path)
+                                except Exception as cleanup_error:
+                                    logger.error(f"Cleanup error: {str(cleanup_error)}")
+                else:
+                    await message.reply_text("❌ Conversion failed")
+            else:
+                await message.reply_text("❌ Download failed")
+
+    except Exception as e:
+        logger.error(f"Handler error: {str(e)}")
+        await message.reply_text(f"❌ Error: {str(e)}")
+
 @Client.on_message(filters.command(["m3u8", "mp3", "mp4"]))
 async def handle_command(client, message):
     """Handle /m3u8, /mp3, and /mp4 commands"""
     command = message.text.split()[0][1:]
-    
+
     if command == "mp3":
         await message.reply_text(
             "🎵 **M3U8 Audio Extractor**\n\n"
